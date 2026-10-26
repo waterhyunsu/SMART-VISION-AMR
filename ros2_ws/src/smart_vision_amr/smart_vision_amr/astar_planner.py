@@ -1,11 +1,12 @@
 """A* ROS adapter: OccupancyGrid + persistent cells + PoseStamped goal -> Path."""
 
+import json
 import rclpy
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import OccupancyGrid, Path
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
-from std_msgs.msg import Int32MultiArray
+from std_msgs.msg import Int32MultiArray, String
 from tf2_ros import Buffer, TransformException, TransformListener
 from collections import deque
 
@@ -22,6 +23,7 @@ class AStarPlannerNode(Node):
         self.declare_parameter("occupied_threshold", 65)
         self.declare_parameter("obstacle_inflation_cells", 2)
         self.map = None
+        self.raw_static_grid = None
         self.remembered = set()
         self.observed = set()
         self.last_goal = None
@@ -38,12 +40,31 @@ class AStarPlannerNode(Node):
         self.create_subscription(Int32MultiArray, "/smart_vision_amr/observed_obstacles",
                                  self.on_observed, 10)
         self.create_subscription(PoseStamped, "/smart_vision_amr/goal", self.on_goal, 10)
+        self.create_subscription(String, "/smart_vision_amr/navigation_status",
+                                 self.on_navigation_status, 10)
         self.create_timer(1.0, self.retry_transform)
+
+    def on_navigation_status(self, msg):
+        try:
+            status = json.loads(msg.data).get("status")
+        except (ValueError, AttributeError):
+            return
+        if status == "FAILED":
+            # Keep the active goal and last route so a later scan/memory update
+            # can trigger a fresh plan after Nav2 aborts for lack of progress.
+            self.get_logger().warning(
+                "Navigation failed; keeping goal for obstacle-driven replanning")
+            return
+        if status in ("SUCCEEDED", "CANCELED"):
+            self.last_goal = None
+            self.planned_cells = []
+            self.waiting_for_transform = False
 
     def on_map(self, msg):
         threshold = self.get_parameter("occupied_threshold").value
         inflation = self.get_parameter("obstacle_inflation_cells").value
         self.map = (msg, occupancy_to_grid(msg, threshold, inflation))
+        self.raw_static_grid = occupancy_to_grid(msg, threshold, 0)
         if self.last_goal is not None:
             self.plan_to(self.last_goal)
 
@@ -122,12 +143,16 @@ class AStarPlannerNode(Node):
         # even when the footprint is still clear. Permit the A* search to leave
         # that one dynamic cell; static-map and confirmed-memory collisions stay
         # hard failures, while Nav2's local costmap retains its collision safety.
-        escape_cells = self._dynamic_escape_halo(
+        dynamic_escape_cells = self._dynamic_escape_halo(
             start, observed_blocked | remembered_blocked, self.observed, self.remembered,
             grid, inflation)
-        allow_dynamic_escape = bool(escape_cells)
+        static_escape_cells = self._static_inflation_escape_halo(
+            start, grid, self.raw_static_grid, inflation,
+            remembered_blocked | observed_blocked, self.remembered, self.observed)
+        escape_cells = dynamic_escape_cells | static_escape_cells
+        allow_blocked_start = bool(escape_cells)
         cells = self.planner.plan(grid, start, end, blocked,
-                                  allow_blocked_start=allow_dynamic_escape,
+                                  allow_blocked_start=allow_blocked_start,
                                   escape_cells=escape_cells)
         self.planned_cells = cells
         if not cells:
@@ -136,7 +161,8 @@ class AStarPlannerNode(Node):
                 f"remembered_start={start in remembered_blocked}, "
                 f"observed_start={start in observed_blocked}, "
                 f"raw_observed_start={start in self.observed}, "
-                f"dynamic_escape_cells={len(escape_cells)}, "
+                f"dynamic_escape_cells={len(dynamic_escape_cells)}, "
+                f"static_escape_cells={len(static_escape_cells)}, "
                 f"static_goal={grid.is_static_obstacle(end)}, "
                 f"remembered_goal={end in remembered_blocked}, "
                 f"observed_goal={end in observed_blocked})")
@@ -162,6 +188,43 @@ class AStarPlannerNode(Node):
             path.poses.append(pose)
         self.path_pub.publish(path)
         self.get_logger().info(f"Published A* path with {len(path.poses)} poses")
+
+    @staticmethod
+    def _static_inflation_escape_halo(start, inflated_grid, raw_grid, inflation,
+                                      dynamic_blocked, raw_remembered, raw_observed):
+        """Allow bounded egress from static inflation when the raw map cell is free.
+
+        Unknown and occupied map cells, live scan returns, and confirmed memory
+        remain hard blocks. Only the connected inflated-only border around the
+        robot's current cell can be crossed; the configured inflation remains
+        fully enforced everywhere else.
+        """
+        if (raw_grid is None or not raw_grid.contains(start)
+                or raw_grid.is_static_obstacle(start)
+                or not inflated_grid.is_static_obstacle(start)
+                or start in raw_remembered or start in raw_observed
+                or start in dynamic_blocked):
+            return set()
+
+        limit = max(1, int(inflation) + 1)
+        escaped = {start}
+        queue = deque([(start, 0)])
+        while queue:
+            cell, depth = queue.popleft()
+            if depth >= limit:
+                continue
+            for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1),
+                           (-1, -1), (-1, 1), (1, -1), (1, 1)):
+                neighbor = (cell[0] + dx, cell[1] + dy)
+                if (neighbor in escaped or not inflated_grid.contains(neighbor)
+                        or not inflated_grid.is_static_obstacle(neighbor)
+                        or raw_grid.is_static_obstacle(neighbor)
+                        or neighbor in dynamic_blocked
+                        or neighbor in raw_remembered or neighbor in raw_observed):
+                    continue
+                escaped.add(neighbor)
+                queue.append((neighbor, depth + 1))
+        return escaped
 
     @staticmethod
     def _dynamic_escape_halo(start, soft_blocked, raw_observed, raw_remembered, grid, inflation):

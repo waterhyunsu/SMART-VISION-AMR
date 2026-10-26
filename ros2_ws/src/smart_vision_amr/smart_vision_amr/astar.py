@@ -36,7 +36,7 @@ class AStarPlanner:
         escape_cells = escape_cells or set()
         if not grid.contains(start) or not grid.contains(goal):
             raise ValueError("start and goal must be inside the grid")
-        if (grid.is_static_obstacle(start)
+        if ((grid.is_static_obstacle(start) and start not in escape_cells)
                 or (start in remembered and not allow_blocked_start)
                 or self._blocked(grid, goal, remembered, escape_cells)):
             return []
@@ -81,9 +81,11 @@ class AStarPlanner:
 
     @staticmethod
     def _blocked(grid: Grid, cell: Cell, remembered: set[Cell], escape_cells: set[Cell] | None = None) -> bool:
-        # Only the adapter may nominate cells in the dynamic LiDAR inflation halo.
-        # Static occupancy and confirmed memory are never bypassed.
-        return grid.is_static_obstacle(cell) or (cell in remembered and cell not in (escape_cells or set()))
+        # The adapter may nominate cells only in a bounded inflation halo around
+        # the robot's current cell. Raw occupied and unknown cells stay blocked.
+        escaped = escape_cells or set()
+        return ((grid.is_static_obstacle(cell) and cell not in escaped)
+                or (cell in remembered and cell not in escaped))
 
     @staticmethod
     def _reconstruct(came_from: dict[Cell, Cell], current: Cell) -> list[Cell]:

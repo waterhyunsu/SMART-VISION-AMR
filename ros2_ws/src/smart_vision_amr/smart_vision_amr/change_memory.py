@@ -9,7 +9,7 @@ from pathlib import Path
 import rclpy
 from nav_msgs.msg import OccupancyGrid
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
+from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import Int32MultiArray
 from std_srvs.srv import Trigger
@@ -47,7 +47,8 @@ class ChangeMemoryNode(Node):
         self.observation_pub = self.create_publisher(
             Int32MultiArray, "/smart_vision_amr/observed_obstacles", 10)
         self.create_subscription(OccupancyGrid, self.get_parameter("map_topic").value, self.on_map, latched)
-        self.create_subscription(LaserScan, self.get_parameter("scan_topic").value, self.on_scan, 10)
+        self.create_subscription(LaserScan, self.get_parameter("scan_topic").value,
+                                 self.on_scan, qos_profile_sensor_data)
         self.create_service(Trigger, "/smart_vision_amr/save_memory", self.save_service)
         self.create_service(Trigger, "/smart_vision_amr/clear_memory", self.clear_service)
 

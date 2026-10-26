@@ -37,29 +37,35 @@ def occupancy_to_grid(message, occupied_threshold=65, inflation_cells=0):
             row.append(value < 0 or value >= occupied_threshold)
         rows.append(tuple(row))
     if inflation_cells > 0:
-        # Expand only from source rows. Blocked/unknown cells are already true,
-        # so this avoids a large per-cell inflation set for mostly-unknown maps.
-        source_rows = [tuple(x for x, blocked in enumerate(row) if blocked) for row in rows]
-        for y in range(height):
-            expanded = set()
-            for source_y in range(max(0, y - inflation_cells), min(height, y + inflation_cells + 1)):
-                for x in source_rows[source_y]:
-                    expanded.update(range(max(0, x - inflation_cells), min(width, x + inflation_cells + 1)))
-            if expanded:
-                rows[y] = tuple(value or x in expanded for x, value in enumerate(rows[y]))
-    return Grid(tuple(rows))
+        offsets = [(dx, dy)
+                   for dy in range(-inflation_cells, inflation_cells + 1)
+                   for dx in range(-inflation_cells, inflation_cells + 1)
+                   if dx * dx + dy * dy <= inflation_cells * inflation_cells]
+        sources = [(x, y) for y, row in enumerate(rows)
+                   for x, blocked in enumerate(row) if blocked]
+        rows = [list(row) for row in rows]
+        for x, y in sources:
+            for dx, dy in offsets:
+                nx, ny = x + dx, y + dy
+                if 0 <= nx < width and 0 <= ny < height:
+                    rows[ny][nx] = True
+    return Grid(tuple(tuple(row) for row in rows))
 
 
 def inflate_cells(cells, width, height, radius):
     if radius <= 0:
         return set(cells)
     result = set()
+    radius_squared = radius * radius
+    offsets = [(dx, dy)
+               for dy in range(-radius, radius + 1)
+               for dx in range(-radius, radius + 1)
+               if dx * dx + dy * dy <= radius_squared]
     for x, y in cells:
-        for dy in range(-radius, radius + 1):
-            for dx in range(-radius, radius + 1):
-                nx, ny = x + dx, y + dy
-                if 0 <= nx < width and 0 <= ny < height:
-                    result.add((nx, ny))
+        for dx, dy in offsets:
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < width and 0 <= ny < height:
+                result.add((nx, ny))
     return result
 
 

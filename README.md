@@ -34,7 +34,13 @@ Pi에서 이미 bringup이 실행 중이면 PC 명령만 실행합니다. 설치
 `/smart_vision_amr/goal` → A* (`/smart_vision_amr/path`) → Nav2 `/follow_path`
 → Nav2 controller `/cmd_vel` → TurtleBot3. `/scan` 관측은 A*의 동적 장애물
 회피에 사용하고, Nav2 local costmap이 근거리 충돌 검사를 담당합니다.
-장애물 기억은 기본적으로 꺼져 있으며 `memory_enabled:=true`로 켤 수 있습니다.
+
+> **적응형 장애물 기억 기준:** 같은 지도 셀이 장애물로 **5회 이상 관측되고,
+> 첫 관측부터 최소 2초가 지난 경우에만** 기억 셀로 확정합니다. 두 조건을
+> 모두 만족해야 합니다. 확정된 셀은 A*가 장애물로 취급하고, 변경된 셀이 현재
+> 경로를 막으면 새 경로를 계산합니다. 기억은 기본적으로 켜져 있으며,
+> `~/.ros/smart_vision_amr/classroom_memory.json`에 저장됩니다.
+> 셀이 비어 있는 것으로 5회 이상, 최소 2초간 관측되면 기억에서 해제합니다.
 
 ## 1. 로봇 Raspberry Pi
 
@@ -79,8 +85,19 @@ rosdep install --from-paths src --ignore-src -r -y
 colcon build --symlink-install
 source install/setup.bash
 export TURTLEBOT3_MODEL=waffle_pi
+python3 ../scripts/install_tf2_02520_overlay.py  # tf2 0.25.21~0.25.24인 PC에서 1회
 ros2 launch smart_vision_amr hardware.launch.py
 ```
+
+Humble의 `tf2` 0.25.23에서 Nav2 TF 수신이 멈추고, 로컬 코스트맵은 오래된
+로봇 자세를 사용한 채 새 타임스탬프로 발행되는 현상을 확인했습니다. 위 스크립트는
+ROS 공식 2026-07-02 스냅샷의 서명과 패키지 해시를 검증한 뒤 정상 동작이
+보고된 `tf2` 0.25.20을 사용자 디렉터리에 설치합니다. 시스템 apt 패키지는
+수정하지 않습니다. 해당 버전의 `tf2`가 설치된 PC에서는 `hardware.launch.py`가
+이 로컬 버전을 자동으로 사용하고, 로컬 버전이 없으면 주행 런치를 중단합니다.
+Nav2는 기본적으로 노드를 개별 프로세스로 실행합니다.
+실기 진단 중에는 컨트롤러의 전진 속도를 최대 0.16 m/s, 회전 속도를
+최대 0.5 rad/s로 제한합니다.
 
 이 launch는 가벼운 RViz 화면도 함께 엽니다. 지도, 로봇 위치 축, A* 경로만
 표시하며 화면 갱신을 10 FPS로 제한합니다. LaserScan 점군, 로봇 3D 모델,
@@ -107,6 +124,9 @@ ros2 lifecycle get /controller_server
 자동으로 열린 RViz에서 실제 위치에 맞춰 **2D Pose Estimate**를 지정한 뒤
 `ros2 run tf2_ros tf2_echo map base_footprint`가 연속적으로 출력되는지
 확인합니다. 지도와 위치 추정이 맞지 않으면 목표를 보내지 마세요.
+또한 `/local_costmap/published_footprint`의 `header.stamp`가 현재 시간에 맞게
+계속 증가해야 합니다. 오래된 코스트맵, `/scan`, `/odom`이 감지되면
+`path_follower`가 목표 전송을 거부하거나 진행 중인 목표를 취소합니다.
 
 ## 4. 첫 목표
 
@@ -139,7 +159,7 @@ ros2 topic echo /cmd_vel
 5. `/cmd_vel`이 나오는데 바퀴가 돌지 않으면 Pi의 OpenCR/모터 쪽을 확인합니다.
 
 `config/nodes.yaml`의 `obstacle_inflation_cells`는 0.05 m 해상도 기준
-6셀(0.30 m)입니다. 실제 통로 폭과 로봇 외형을 확인한 뒤 조정하세요.
+5셀(0.25 m)입니다. 실제 통로 폭과 로봇 외형을 확인한 뒤 조정하세요.
 Nav2의 controller/local costmap은 설치된 TurtleBot3 Humble 설정을 따릅니다.
 
 ## 출처

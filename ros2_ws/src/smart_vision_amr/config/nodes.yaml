@@ -4,12 +4,13 @@
     map_frame: map
     base_frame: base_footprint
     occupied_threshold: 65
-    obstacle_inflation_cells: 6
+    obstacle_inflation_cells: 5  # 0.25 m at the map's 0.05 m resolution
 /path_follower:
   ros__parameters:
     action_name: /follow_path
     controller_id: FollowPath
     goal_checker_id: general_goal_checker
+    controller_frame: odom
 /change_memory:
   ros__parameters:
     map_topic: /map
