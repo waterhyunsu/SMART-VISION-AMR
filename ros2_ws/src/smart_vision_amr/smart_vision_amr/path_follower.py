@@ -2,6 +2,7 @@
 
 import json
 import math
+import time
 
 import rclpy
 from geometry_msgs.msg import PolygonStamped, PoseStamped
@@ -26,6 +27,7 @@ class PathFollower(Node):
         self.declare_parameter("controller_id", "")
         self.declare_parameter("goal_checker_id", "")
         self.declare_parameter("controller_frame", "odom")
+        self.declare_parameter("path_change_stability_sec", 0.6)
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.client = ActionClient(self, FollowPath, self.get_parameter("action_name").value)
@@ -33,8 +35,11 @@ class PathFollower(Node):
         self.active_goal = None
         self.goal_request_pending = False
         self.pending_path = None
+        self.pending_path_ready_at = None
         self.cancel_requested = False
         self.cancel_when_accepted = False
+        self.failure_reported_for_cancel = False
+        self.user_cancel_requested = False
         self.latest_path_key = None
         self.active_path = None
         self.safety_fault_reason = None
@@ -53,6 +58,7 @@ class PathFollower(Node):
         self.create_subscription(Path, "/smart_vision_amr/path", self.on_path, 10)
         self.create_service(Trigger, "/smart_vision_amr/cancel_navigation", self.cancel_navigation)
         self.create_timer(0.2, self._watch_navigation_inputs)
+        self.create_timer(0.1, self._process_pending_path)
 
     def _on_scan(self, message):
         self.latest_scan = message
@@ -110,10 +116,21 @@ class PathFollower(Node):
             self._cancel_active_goal()
 
     def cancel_navigation(self, request, response):
-        if self.active_goal is None:
-            response.success, response.message = True, "No active navigation goal"
-            return response
-        self.active_goal.cancel_goal_async()
+        # Clear the planner's retained target even when Nav2 has no active
+        # action (for example while A* is retrying after a safety failure).
+        self.pending_path = None
+        self.pending_path_ready_at = None
+        self.latest_path_key = None
+        self.active_path = None
+        self.failure_reported_for_cancel = False
+        self.safety_fault_reason = None
+        self.user_cancel_requested = self.active_goal is not None or self.goal_request_pending
+        self.cancel_when_accepted = self.goal_request_pending
+        if self.active_goal is not None:
+            self._cancel_active_goal()
+        else:
+            self.cancel_requested = False
+        self.publish_status("CANCELED", "Navigation canceled by user")
         response.success, response.message = True, "Cancellation requested"
         return response
 
@@ -121,11 +138,14 @@ class PathFollower(Node):
         if not path.poses:
             self.get_logger().error("Planner reported no path; cancelling active navigation")
             self.pending_path = None
+            self.pending_path_ready_at = None
             self.latest_path_key = None
             self.active_path = None
             if self.active_goal is not None:
+                self.failure_reported_for_cancel = True
                 self._cancel_active_goal()
             elif self.goal_request_pending:
+                self.failure_reported_for_cancel = True
                 self.cancel_when_accepted = True
             message = String()
             message.data = json.dumps({"status": "FAILED", "message": "Planner returned no path"})
@@ -136,15 +156,63 @@ class PathFollower(Node):
             return
         self.latest_path_key = key
         if self.goal_request_pending or self.active_goal is not None:
-            reference = self.pending_path or self.active_path
-            if reference is not None and paths_are_equivalent(
-                    self._points(reference), self._points(path)):
+            reference = self.active_path
+            same_destination = (reference is not None
+                                and self._same_destination(reference, path))
+            if (same_destination and paths_are_equivalent(
+                    self._points(reference), self._points(path))):
+                if self.cancel_requested or self.cancel_when_accepted:
+                    # An issued cancellation cannot be withdrawn. Resume the
+                    # latest route after its result, even if it matches the old
+                    # route again, instead of exposing an internal CANCELED.
+                    self.pending_path = path
+                    self.pending_path_ready_at = time.monotonic()
+                    return
+                self.pending_path = None
+                self.pending_path_ready_at = None
                 self.get_logger().debug("Keeping active FollowPath goal; update only advances along the same route")
                 return
             self.pending_path = path
-            self._cancel_active_goal()
+            stability = self.get_parameter("path_change_stability_sec").value
+            self.pending_path_ready_at = time.monotonic() + (stability if same_destination else 0.0)
+            if not same_destination:
+                if self.active_goal is not None:
+                    self._cancel_active_goal()
+                elif self.goal_request_pending:
+                    self.cancel_when_accepted = True
             return
         self._send_path(path)
+
+    @staticmethod
+    def _same_destination(reference, candidate, position_tolerance=0.25, yaw_tolerance=0.15):
+        if not reference.poses or not candidate.poses:
+            return False
+        first = reference.poses[-1].pose
+        second = candidate.poses[-1].pose
+        if math.hypot(first.position.x - second.position.x,
+                      first.position.y - second.position.y) > position_tolerance:
+            return False
+
+        def yaw(orientation):
+            return math.atan2(
+                2.0 * (orientation.w * orientation.z + orientation.x * orientation.y),
+                1.0 - 2.0 * (orientation.y * orientation.y + orientation.z * orientation.z))
+
+        delta = yaw(second.orientation) - yaw(first.orientation)
+        return abs(math.atan2(math.sin(delta), math.cos(delta))) <= yaw_tolerance
+
+    def _process_pending_path(self):
+        if self.pending_path is None or self.pending_path_ready_at is None:
+            return
+        if time.monotonic() < self.pending_path_ready_at:
+            return
+        if self.goal_request_pending:
+            self.cancel_when_accepted = True
+            return
+        if self.active_goal is not None:
+            self._cancel_active_goal()
+            return
+        self._send_pending_path()
 
     @staticmethod
     def _path_key(path):
@@ -222,13 +290,21 @@ class PathFollower(Node):
         if not goal_handle.accepted:
             self.get_logger().error("Nav2 rejected FollowPath goal")
             if self.pending_path is None:
+                self.latest_path_key = None
+            if (self.pending_path is None and not self.failure_reported_for_cancel
+                    and not self.user_cancel_requested):
                 self.publish_status("FAILED", "Nav2 rejected FollowPath goal")
+            self.active_path = None
+            self.failure_reported_for_cancel = False
+            self.user_cancel_requested = False
             self.cancel_when_accepted = False
-            self._send_pending_path()
+            self._process_pending_path()
             return
         self.active_goal = goal_handle
-        if self.pending_path is not None or self.cancel_when_accepted:
+        if self.cancel_when_accepted:
             self._cancel_active_goal()
+        else:
+            self._process_pending_path()
         goal_handle.get_result_async().add_done_callback(self.on_result)
 
     def on_feedback(self, feedback):
@@ -242,18 +318,30 @@ class PathFollower(Node):
                   GoalStatus.STATUS_CANCELED: "CANCELED"}.get(result.status, "FAILED")
         if self.safety_fault_reason:
             status = "FAILED"
-        if self.pending_path is None:
+        if status == "FAILED" and self.pending_path is None and not self.user_cancel_requested:
+            # Let the planner retry the retained goal with the latest scan and
+            # let an identical path be submitted again after Nav2 aborts.
+            self.latest_path_key = None
+        if (self.pending_path is None and not self.failure_reported_for_cancel
+                and not self.user_cancel_requested):
             self.publish_status(status, self.safety_fault_reason or f"Nav2 status {result.status}")
+        self.failure_reported_for_cancel = False
+        self.user_cancel_requested = False
         self.active_goal = None
+        self.active_path = None
         self.cancel_requested = False
         self.cancel_when_accepted = False
         self.safety_fault_reason = None
-        self._send_pending_path()
+        self._process_pending_path()
 
     def _send_pending_path(self):
         if self.pending_path is None or self.active_goal is not None or self.goal_request_pending:
             return
+        if (self.pending_path_ready_at is not None
+                and time.monotonic() < self.pending_path_ready_at):
+            return
         path, self.pending_path = self.pending_path, None
+        self.pending_path_ready_at = None
         self._send_path(path)
 
     def publish_status(self, status, message_text):

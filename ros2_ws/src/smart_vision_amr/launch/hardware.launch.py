@@ -55,6 +55,7 @@ def generate_launch_description():
     safe_nav_params = RewrittenYaml(
         source_file=LaunchConfiguration('params_file'), root_key='', convert_types=True,
         param_rewrites={
+            'amcl.ros__parameters.transform_tolerance': '0.1',
             'local_costmap.local_costmap.ros__parameters.robot_radius': '0.20',
             'local_costmap.local_costmap.ros__parameters.inflation_layer.inflation_radius': '0.25',
             'local_costmap.local_costmap.ros__parameters.publish_frequency': '5.0',
@@ -65,6 +66,11 @@ def generate_launch_description():
             'controller_server.ros__parameters.FollowPath.vx_samples': '4',
             'controller_server.ros__parameters.FollowPath.max_vel_theta': '0.5',
             'controller_server.ros__parameters.FollowPath.trans_stopped_velocity': '0.02',
+            # Keep DWB's rotate-to-goal trigger aligned with Nav2's checker.
+            # Together with A*'s 0.05 m endpoint snap, this limits early
+            # success at a position noticeably short of the requested goal.
+            'controller_server.ros__parameters.general_goal_checker.xy_goal_tolerance': '0.15',
+            'controller_server.ros__parameters.FollowPath.xy_goal_tolerance': '0.15',
             'velocity_smoother.ros__parameters.max_velocity': '[0.16, 0.0, 1.0]',
             'controller_server.ros__parameters.progress_checker.required_movement_radius': '0.1',
             'controller_server.ros__parameters.progress_checker.movement_time_allowance': '20.0',

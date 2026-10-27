@@ -1,6 +1,7 @@
 """A* ROS adapter: OccupancyGrid + persistent cells + PoseStamped goal -> Path."""
 
 import json
+from math import ceil, hypot
 import rclpy
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import OccupancyGrid, Path
@@ -22,6 +23,7 @@ class AStarPlannerNode(Node):
         self.declare_parameter("base_frame", "base_link")
         self.declare_parameter("occupied_threshold", 65)
         self.declare_parameter("obstacle_inflation_cells", 2)
+        self.declare_parameter("goal_snap_tolerance_m", 0.20)
         self.map = None
         self.raw_static_grid = None
         self.remembered = set()
@@ -29,6 +31,9 @@ class AStarPlannerNode(Node):
         self.last_goal = None
         self.planned_cells = []
         self.waiting_for_transform = False
+        self.no_path = False
+        self.retry_after_failure = False
+        self.last_failure_signature = None
         self.planner = AStarPlanner()
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -50,15 +55,17 @@ class AStarPlannerNode(Node):
         except (ValueError, AttributeError):
             return
         if status == "FAILED":
-            # Keep the active goal and last route so a later scan/memory update
-            # can trigger a fresh plan after Nav2 aborts for lack of progress.
+            # Keep the goal and retry with the newest map/scan data. The path
+            # follower clears its duplicate-path guard after Nav2 aborts.
+            self.retry_after_failure = True
             self.get_logger().warning(
-                "Navigation failed; keeping goal for obstacle-driven replanning")
+                "Navigation failed; retaining goal and retrying A* with current obstacle data")
             return
         if status in ("SUCCEEDED", "CANCELED"):
             self.last_goal = None
             self.planned_cells = []
             self.waiting_for_transform = False
+            self.retry_after_failure = False
 
     def on_map(self, msg):
         threshold = self.get_parameter("occupied_threshold").value
@@ -69,7 +76,8 @@ class AStarPlannerNode(Node):
             self.plan_to(self.last_goal)
 
     def retry_transform(self):
-        if self.waiting_for_transform and self.last_goal is not None and self.map is not None:
+        if ((self.waiting_for_transform or self.no_path or self.retry_after_failure)
+                and self.last_goal is not None and self.map is not None):
             self.plan_to(self.last_goal)
 
     def on_memory(self, msg):
@@ -112,6 +120,8 @@ class AStarPlannerNode(Node):
 
     def on_goal(self, goal):
         self.last_goal = goal
+        self.no_path = False
+        self.retry_after_failure = False
         self.plan_to(goal)
 
     def plan_to(self, goal):
@@ -143,34 +153,64 @@ class AStarPlannerNode(Node):
         # even when the footprint is still clear. Permit the A* search to leave
         # that one dynamic cell; static-map and confirmed-memory collisions stay
         # hard failures, while Nav2's local costmap retains its collision safety.
+        dynamic_blocked = remembered_blocked | observed_blocked
         dynamic_escape_cells = self._dynamic_escape_halo(
-            start, observed_blocked | remembered_blocked, self.observed, self.remembered,
-            grid, inflation)
+            start, dynamic_blocked, self.observed, self.remembered, grid, inflation)
         static_escape_cells = self._static_inflation_escape_halo(
             start, grid, self.raw_static_grid, inflation,
             remembered_blocked | observed_blocked, self.remembered, self.observed)
-        escape_cells = dynamic_escape_cells | static_escape_cells
+        combined_escape_cells = self._combined_inflation_escape_halo(
+            start, grid, self.raw_static_grid, dynamic_blocked,
+            self.remembered, self.observed, inflation)
+        escape_cells = dynamic_escape_cells | static_escape_cells | combined_escape_cells
         allow_blocked_start = bool(escape_cells)
         cells = self.planner.plan(grid, start, end, blocked,
                                   allow_blocked_start=allow_blocked_start,
                                   escape_cells=escape_cells)
+        if not cells:
+            snapped = self._nearest_reachable_goal(
+                map_msg.info, goal, start, end, grid, blocked,
+                allow_blocked_start, escape_cells)
+            if snapped is not None:
+                end, cells, offset = snapped
+                self.get_logger().warning(
+                    f"Requested goal is unreachable; using nearest reachable pose {end} "
+                    f"({offset:.2f} m from goal, within Nav2 tolerance)")
         self.planned_cells = cells
         if not cells:
-            self.get_logger().error(
-                f"No path from {start} to {end} (static_start={grid.is_static_obstacle(start)}, "
-                f"remembered_start={start in remembered_blocked}, "
-                f"observed_start={start in observed_blocked}, "
-                f"raw_observed_start={start in self.observed}, "
-                f"dynamic_escape_cells={len(dynamic_escape_cells)}, "
-                f"static_escape_cells={len(static_escape_cells)}, "
-                f"static_goal={grid.is_static_obstacle(end)}, "
-                f"remembered_goal={end in remembered_blocked}, "
-                f"observed_goal={end in observed_blocked})")
-            path = Path()
-            path.header.frame_id = frame
-            path.header.stamp = self.get_clock().now().to_msg()
-            self.path_pub.publish(path)
+            blockers = []
+            if self.raw_static_grid.is_static_obstacle(end):
+                blockers.append("occupied/unknown map cell")
+            elif grid.is_static_obstacle(end):
+                blockers.append("static-map clearance")
+            if end in self.remembered:
+                blockers.append("remembered obstacle cell")
+            elif end in remembered_blocked:
+                blockers.append("remembered-obstacle clearance")
+            if end in self.observed:
+                blockers.append("current LiDAR obstacle cell")
+            elif end in observed_blocked:
+                blockers.append("current-LiDAR clearance")
+            if blockers:
+                reason = (f"Goal {end} is blocked by {', '.join(blockers)}; "
+                          f"inflation radius is {inflation} cells "
+                          f"({inflation * map_msg.info.resolution:.2f} m)")
+            else:
+                reason = f"No collision-free path from {start} to {end}"
+            signature = (start, end, tuple(blockers))
+            if signature != self.last_failure_signature:
+                self.get_logger().error(reason)
+                self.last_failure_signature = signature
+            if not self.no_path:
+                path = Path()
+                path.header.frame_id = frame
+                path.header.stamp = self.get_clock().now().to_msg()
+                self.path_pub.publish(path)
+            self.no_path = True
             return
+        self.no_path = False
+        self.retry_after_failure = False
+        self.last_failure_signature = None
         path = Path()
         path.header.frame_id = frame
         path.header.stamp = self.get_clock().now().to_msg()
@@ -188,6 +228,35 @@ class AStarPlannerNode(Node):
             path.poses.append(pose)
         self.path_pub.publish(path)
         self.get_logger().info(f"Published A* path with {len(path.poses)} poses")
+
+    def _nearest_reachable_goal(self, map_info, goal, start, end, grid, blocked,
+                                allow_blocked_start, escape_cells):
+        """Find a reachable endpoint inside Nav2's positional goal tolerance."""
+        tolerance = float(self.get_parameter("goal_snap_tolerance_m").value)
+        resolution = map_info.resolution
+        if tolerance <= 0.0 or resolution <= 0.0:
+            return None
+
+        radius = ceil(tolerance / resolution) + 1
+        candidates = []
+        for dy in range(-radius, radius + 1):
+            for dx in range(-radius, radius + 1):
+                candidate = (end[0] + dx, end[1] + dy)
+                if candidate == end or not grid.contains(candidate):
+                    continue
+                world_x, world_y = cell_to_world(map_info, candidate)
+                offset = hypot(world_x - goal.pose.position.x,
+                               world_y - goal.pose.position.y)
+                if offset <= tolerance:
+                    candidates.append((offset, candidate))
+
+        for offset, candidate in sorted(candidates):
+            cells = self.planner.plan(grid, start, candidate, blocked,
+                                      allow_blocked_start=allow_blocked_start,
+                                      escape_cells=escape_cells)
+            if cells:
+                return candidate, cells, offset
+        return None
 
     @staticmethod
     def _static_inflation_escape_halo(start, inflated_grid, raw_grid, inflation,
@@ -250,6 +319,42 @@ class AStarPlannerNode(Node):
                     continue
                 if (neighbor in raw_observed or neighbor in raw_remembered
                         or grid.is_static_obstacle(neighbor)):
+                    continue
+                escaped.add(neighbor)
+                queue.append((neighbor, depth + 1))
+        return escaped
+
+    @staticmethod
+    def _combined_inflation_escape_halo(start, inflated_grid, raw_grid, dynamic_blocked,
+                                        raw_remembered, raw_observed, inflation):
+        """Permit bounded egress from overlapping static and dynamic inflation halos.
+
+        The raw map, current scan hits, and exact remembered cells remain hard
+        obstacles. Only inflated-only cells connected to the robot's current
+        cell can be crossed while leaving the overlapping safety margins.
+        """
+        if (raw_grid is None or not raw_grid.contains(start)
+                or raw_grid.is_static_obstacle(start)
+                or start in raw_remembered or start in raw_observed
+                or not (inflated_grid.is_static_obstacle(start)
+                        or start in dynamic_blocked)):
+            return set()
+
+        limit = max(1, int(inflation) + 1)
+        escaped = {start}
+        queue = deque([(start, 0)])
+        while queue:
+            cell, depth = queue.popleft()
+            if depth >= limit:
+                continue
+            for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1),
+                           (-1, -1), (-1, 1), (1, -1), (1, 1)):
+                neighbor = (cell[0] + dx, cell[1] + dy)
+                if (neighbor in escaped or not inflated_grid.contains(neighbor)
+                        or raw_grid.is_static_obstacle(neighbor)
+                        or neighbor in raw_remembered or neighbor in raw_observed
+                        or not (inflated_grid.is_static_obstacle(neighbor)
+                                or neighbor in dynamic_blocked)):
                     continue
                 escaped.add(neighbor)
                 queue.append((neighbor, depth + 1))

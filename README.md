@@ -4,6 +4,8 @@ Ubuntu 22.04 / ROS 2 Humble용 첫 버전입니다. Raspberry Pi의 TurtleBot3 b
 Linux PC의 Nav2를 사용합니다. 첨부받은 `classroom_map.yaml` 및 `.pgm`을 포함합니다.
 Gazebo, 카메라, ArUco 기능은 포함하지 않습니다.
 
+다른 워크스테이션에서 이어서 실행할 때는 [진행 상황과 재설치 절차](docs/HANDOFF_2026-10-26.md)를 먼저 확인하세요.
+
 ## 실행 명령 한눈에 보기
 
 최초 설치와 빌드를 마친 후, **Pi 터미널**과 **Linux PC 터미널**에서 각각 실행합니다.
@@ -148,7 +150,10 @@ ros2 topic echo /cmd_vel
 
 중단은 `ros2 service call /smart_vision_amr/cancel_navigation std_srvs/srv/Trigger '{}'`입니다.
 첫 주행은 바퀴를 띄워 방향을 확인하고, 이후 넓은 공간에서 저속으로 수행하세요.
-프로젝트는 실제 장비에서 아직 검증되지 않았습니다.
+실제 장비에서 짧은 거리와 중거리 주행, 목표 방향 정렬은 확인했습니다.
+장거리 반복 주행과 장애물 우회는 추가 검증이 필요합니다. 마지막 실기 시험은
+로봇의 OpenCR 통신 오류와 bringup 종료로 중단되어, 충전 후 하드웨어 상태를
+먼저 확인해야 합니다.
 
 ## 문제를 좁히는 순서
 
