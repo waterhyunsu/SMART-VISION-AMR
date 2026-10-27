@@ -2,6 +2,7 @@
 
 import json
 from math import ceil, hypot
+import time
 import rclpy
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import OccupancyGrid, Path
@@ -13,6 +14,7 @@ from collections import deque
 
 from smart_vision_amr.astar import AStarPlanner
 from smart_vision_amr.map_utils import cell_to_world, inflate_cells, occupancy_to_grid, world_to_cell
+from smart_vision_amr.path_geometry import smooth_grid_path
 
 
 class AStarPlannerNode(Node):
@@ -24,6 +26,7 @@ class AStarPlannerNode(Node):
         self.declare_parameter("occupied_threshold", 65)
         self.declare_parameter("obstacle_inflation_cells", 2)
         self.declare_parameter("goal_snap_tolerance_m", 0.20)
+        self.declare_parameter("no_path_grace_sec", 0.5)
         self.map = None
         self.raw_static_grid = None
         self.remembered = set()
@@ -32,6 +35,9 @@ class AStarPlannerNode(Node):
         self.planned_cells = []
         self.waiting_for_transform = False
         self.no_path = False
+        self.no_path_since = None
+        self.no_path_cancel_sent = False
+        self.goal_has_valid_path = False
         self.retry_after_failure = False
         self.last_failure_signature = None
         self.planner = AStarPlanner()
@@ -66,6 +72,10 @@ class AStarPlannerNode(Node):
             self.planned_cells = []
             self.waiting_for_transform = False
             self.retry_after_failure = False
+            self.no_path = False
+            self.no_path_since = None
+            self.no_path_cancel_sent = False
+            self.goal_has_valid_path = False
 
     def on_map(self, msg):
         threshold = self.get_parameter("occupied_threshold").value
@@ -87,13 +97,15 @@ class AStarPlannerNode(Node):
         updated = {(index % width, index // width) for index in msg.data
                    if 0 <= index < width * height}
         if updated != self.remembered:
-            added = updated - self.remembered
-            removed = self.remembered - updated
+            newly_blocked = self._newly_blocked_dynamic_cells(
+                self.remembered, updated, self.observed, width, height,
+                self.get_parameter("obstacle_inflation_cells").value)
             self.remembered = updated
-            # Replan for either transition only when it changes the current
-            # route. Unrelated memory churn must not cancel a valid Nav2 goal.
-            if self.last_goal is not None and (self._changes_block_path(added)
-                                               or self._changes_block_path(removed)):
+            # A cell newly confirmed in memory should not replan if the live
+            # scan already blocks the same inflated area. If no route currently
+            # exists, the timer retries against the updated memory.
+            if (self.last_goal is not None and self.planned_cells
+                    and set(self.planned_cells) & newly_blocked):
                 self.plan_to(self.last_goal)
 
     def on_observed(self, msg):
@@ -103,24 +115,39 @@ class AStarPlannerNode(Node):
         updated = {(index % width, index // width) for index in msg.data
                    if 0 <= index < width * height}
         if updated != self.observed:
-            added = updated - self.observed
+            newly_blocked = self._newly_blocked_dynamic_cells(
+                self.observed, updated, self.remembered, width, height,
+                self.get_parameter("obstacle_inflation_cells").value)
             self.observed = updated
-            # Laser scans vary at sensor frequency. Replan only when newly
-            # observed cells actually intersect the current A* route after inflation.
-            if self.last_goal is not None and self._changes_block_path(added):
+            # Replan only when the combined, inflated obstacle mask grows into
+            # the current route. Scan jitter or a memory confirmation that
+            # covers already-blocked cells leaves the route unchanged.
+            if (self.last_goal is not None and self.planned_cells
+                    and set(self.planned_cells) & newly_blocked):
                 self.plan_to(self.last_goal)
 
-    def _changes_block_path(self, cells):
-        if not cells or not self.planned_cells:
-            return False
-        width, height = self.map[0].info.width, self.map[0].info.height
-        inflation = self.get_parameter("obstacle_inflation_cells").value
-        blocked = inflate_cells(cells, width, height, inflation)
-        return any(cell in blocked for cell in self.planned_cells)
+    @staticmethod
+    def _newly_blocked_dynamic_cells(previous_cells, updated_cells, other_cells,
+                                     width, height, inflation):
+        previous = inflate_cells(set(previous_cells) | set(other_cells),
+                                 width, height, inflation)
+        updated = inflate_cells(set(updated_cells) | set(other_cells),
+                                width, height, inflation)
+        return updated - previous
+
+    @staticmethod
+    def _should_publish_empty_path(has_valid_path, no_path_since, now, grace_sec):
+        if not has_valid_path:
+            return True
+        return no_path_since is not None and now - no_path_since >= grace_sec
 
     def on_goal(self, goal):
         self.last_goal = goal
+        self.planned_cells = []
         self.no_path = False
+        self.no_path_since = None
+        self.no_path_cancel_sent = False
+        self.goal_has_valid_path = False
         self.retry_after_failure = False
         self.plan_to(goal)
 
@@ -176,7 +203,6 @@ class AStarPlannerNode(Node):
                 self.get_logger().warning(
                     f"Requested goal is unreachable; using nearest reachable pose {end} "
                     f"({offset:.2f} m from goal, within Nav2 tolerance)")
-        self.planned_cells = cells
         if not cells:
             blockers = []
             if self.raw_static_grid.is_static_obstacle(end):
@@ -201,26 +227,39 @@ class AStarPlannerNode(Node):
             if signature != self.last_failure_signature:
                 self.get_logger().error(reason)
                 self.last_failure_signature = signature
+            now = time.monotonic()
             if not self.no_path:
+                self.no_path_since = now
+            self.no_path = True
+            grace = float(self.get_parameter("no_path_grace_sec").value)
+            should_cancel = self._should_publish_empty_path(
+                self.goal_has_valid_path, self.no_path_since, now, grace)
+            if should_cancel and not self.no_path_cancel_sent:
                 path = Path()
                 path.header.frame_id = frame
                 path.header.stamp = self.get_clock().now().to_msg()
                 self.path_pub.publish(path)
-            self.no_path = True
+                self.no_path_cancel_sent = True
             return
         self.no_path = False
+        self.no_path_since = None
+        self.no_path_cancel_sent = False
+        self.goal_has_valid_path = True
         self.retry_after_failure = False
         self.last_failure_signature = None
+        self.planned_cells = cells
+        display_cells = smooth_grid_path(
+            cells, lambda cell: self.planner._blocked(grid, cell, blocked, escape_cells))
         path = Path()
         path.header.frame_id = frame
         path.header.stamp = self.get_clock().now().to_msg()
         from math import atan2, sin, cos
-        for index, cell in enumerate(cells):
+        for index, cell in enumerate(display_cells):
             pose = PoseStamped()
             pose.header = path.header
             pose.pose.position.x, pose.pose.position.y = cell_to_world(map_msg.info, cell)
-            if index + 1 < len(cells):
-                next_x, next_y = cell_to_world(map_msg.info, cells[index + 1])
+            if index + 1 < len(display_cells):
+                next_x, next_y = cell_to_world(map_msg.info, display_cells[index + 1])
                 yaw = atan2(next_y - pose.pose.position.y, next_x - pose.pose.position.x)
                 pose.pose.orientation.z, pose.pose.orientation.w = sin(yaw / 2.0), cos(yaw / 2.0)
             else:

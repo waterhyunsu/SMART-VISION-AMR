@@ -138,6 +138,55 @@ class PlannerRetryTests(unittest.TestCase):
         state.plan_to.assert_called_once_with(state.last_goal)
 
 
+class PlannerReplanHysteresisTests(unittest.TestCase):
+    def _planner_state(self, *, remembered, observed, planned_cells):
+        info = MapMetaData()
+        info.width = info.height = 11
+        message = SimpleNamespace(info=info)
+        state = SimpleNamespace(
+            map=(message, None), remembered=set(remembered), observed=set(observed),
+            last_goal=object(), planned_cells=list(planned_cells), plan_to=Mock(),
+            get_parameter=lambda name: SimpleNamespace(value=2))
+        state._newly_blocked_dynamic_cells = AStarPlannerNode._newly_blocked_dynamic_cells
+        return state
+
+    def test_lidar_return_already_covered_by_memory_does_not_replan(self):
+        # The raw scan cell is new, but its inflated blocked area is already
+        # covered by the remembered obstacle. It must not churn the same route.
+        state = self._planner_state(
+            remembered={(5, 5)}, observed=set(), planned_cells=[(5, 5)])
+
+        AStarPlannerNode.on_observed(
+            state, SimpleNamespace(data=[5 * 11 + 5]))
+
+        state.plan_to.assert_not_called()
+
+    def test_newly_blocked_path_cell_still_triggers_replan(self):
+        state = self._planner_state(
+            remembered=set(), observed=set(), planned_cells=[(5, 5)])
+
+        AStarPlannerNode.on_observed(
+            state, SimpleNamespace(data=[5 * 11 + 5]))
+
+        state.plan_to.assert_called_once_with(state.last_goal)
+
+    def test_memory_confirmation_of_live_scan_cell_does_not_replan(self):
+        state = self._planner_state(
+            remembered=set(), observed={(5, 5)}, planned_cells=[(5, 5)])
+
+        AStarPlannerNode.on_memory(
+            state, SimpleNamespace(data=[5 * 11 + 5]))
+
+        state.plan_to.assert_not_called()
+
+    def test_transient_no_path_keeps_last_route_until_grace_expires(self):
+        should_publish = AStarPlannerNode._should_publish_empty_path
+
+        self.assertFalse(should_publish(True, 10.0, 10.49, 0.5))
+        self.assertTrue(should_publish(True, 10.0, 10.5, 0.5))
+        self.assertTrue(should_publish(False, 10.0, 10.0, 0.5))
+
+
 class MemoryConfirmationTests(unittest.TestCase):
     def make_memory(self):
         return ObstacleMemory(
