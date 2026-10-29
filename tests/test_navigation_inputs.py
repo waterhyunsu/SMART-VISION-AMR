@@ -62,6 +62,14 @@ def test_disagreeing_footprint_prevents_motion():
     assert "footprint" in follower._navigation_input_error()
 
 
+def test_recent_footprint_geometry_is_valid_when_header_stamp_is_old():
+    follower = healthy_follower()
+    follower.latest_footprint.header.stamp.sec = 2
+    follower.latest_footprint_at = time.monotonic()
+
+    assert follower._navigation_input_error() is None
+
+
 def test_frozen_ros_clock_cannot_hide_stale_scan_receipt():
     follower = healthy_follower()
     follower.latest_scan_at = time.monotonic() - 2.0

@@ -441,21 +441,25 @@ class PathFollower(Node):
     def _navigation_input_error(self):
         now = self.get_clock().now().nanoseconds * 1e-9
         received_now = time.monotonic()
-        for label, message, received_at, max_age in (
-                ("scan", self.latest_scan, self.latest_scan_at, 0.75),
-                ("odom", self.latest_odom, self.latest_odom_at, 0.75),
+        for label, message, received_at, max_age, check_header_stamp in (
+                ("scan", self.latest_scan, self.latest_scan_at, 0.75, True),
+                ("odom", self.latest_odom, self.latest_odom_at, 0.75, True),
                 ("local costmap footprint", self.latest_footprint,
-                 self.latest_footprint_at, 1.5),
-                ("local costmap", self.latest_costmap, self.latest_costmap_at, 2.0)):
+                 self.latest_footprint_at, 1.5, False),
+                ("local costmap", self.latest_costmap, self.latest_costmap_at, 2.0, True)):
             if message is None:
                 return f"No {label} received"
             if received_at is not None and received_now - received_at > max_age:
                 return f"{label} has stopped updating"
-            stamp = message.header.stamp
-            stamp_seconds = stamp.sec + stamp.nanosec * 1e-9
-            age = now - stamp_seconds
-            if stamp_seconds <= 0 or not isfinite(age) or age > max_age or age < -0.5:
-                return f"{label} is stale (age {age:.2f}s)"
+            # Nav2 can republish the current footprint polygon with the stamp
+            # of its last pose transform. Check publication arrival age and
+            # compare its center with fresh odometry below instead.
+            if check_header_stamp:
+                stamp = message.header.stamp
+                stamp_seconds = stamp.sec + stamp.nanosec * 1e-9
+                age = now - stamp_seconds
+                if stamp_seconds <= 0 or not isfinite(age) or age > max_age or age < -0.5:
+                    return f"{label} is stale (age {age:.2f}s)"
         if (self.latest_odom.header.frame_id != self.latest_costmap.header.frame_id
                 or self.latest_footprint.header.frame_id != self.latest_odom.header.frame_id):
             return "Odometry and local costmap frames differ"
