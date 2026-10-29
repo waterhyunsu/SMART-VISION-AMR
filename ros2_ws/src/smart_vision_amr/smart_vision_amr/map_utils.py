@@ -37,36 +37,51 @@ def occupancy_to_grid(message, occupied_threshold=65, inflation_cells=0):
             row.append(value < 0 or value >= occupied_threshold)
         rows.append(tuple(row))
     if inflation_cells > 0:
-        offsets = [(dx, dy)
-                   for dy in range(-inflation_cells, inflation_cells + 1)
-                   for dx in range(-inflation_cells, inflation_cells + 1)
-                   if dx * dx + dy * dy <= inflation_cells * inflation_cells]
-        sources = [(x, y) for y, row in enumerate(rows)
-                   for x, blocked in enumerate(row) if blocked]
-        rows = [list(row) for row in rows]
-        for x, y in sources:
-            for dx, dy in offsets:
-                nx, ny = x + dx, y + dy
-                if 0 <= nx < width and 0 <= ny < height:
-                    rows[ny][nx] = True
-    return Grid(tuple(tuple(row) for row in rows))
+        # Expand only from source rows. Blocked/unknown cells are already true,
+        # so this avoids a large per-cell inflation set for mostly-unknown maps.
+        source_rows = [tuple(x for x, blocked in enumerate(row) if blocked) for row in rows]
+        for y in range(height):
+            expanded = set()
+            for source_y in range(max(0, y - inflation_cells), min(height, y + inflation_cells + 1)):
+                for x in source_rows[source_y]:
+                    expanded.update(range(max(0, x - inflation_cells), min(width, x + inflation_cells + 1)))
+            if expanded:
+                rows[y] = tuple(value or x in expanded for x, value in enumerate(rows[y]))
+    return Grid(tuple(rows))
 
 
 def inflate_cells(cells, width, height, radius):
     if radius <= 0:
         return set(cells)
     result = set()
-    radius_squared = radius * radius
-    offsets = [(dx, dy)
-               for dy in range(-radius, radius + 1)
-               for dx in range(-radius, radius + 1)
-               if dx * dx + dy * dy <= radius_squared]
     for x, y in cells:
-        for dx, dy in offsets:
-            nx, ny = x + dx, y + dy
-            if 0 <= nx < width and 0 <= ny < height:
-                result.add((nx, ny))
+        for dy in range(-radius, radius + 1):
+            for dx in range(-radius, radius + 1):
+                nx, ny = x + dx, y + dy
+                if 0 <= nx < width and 0 <= ny < height:
+                    result.add((nx, ny))
     return result
+
+
+def split_mapped_wall_returns(cells, raw_static_grid, tolerance_cells):
+    """Separate dynamic returns from near-coincident mapped wall returns.
+
+    A LiDAR endpoint a cell or two away from a mapped wall can be caused by
+    localization/rasterization error. Inflating that endpoint *again* can close
+    a narrow corridor already protected by static map inflation. Only the A*
+    overlay consumes this filtered set; the raw LaserScan is still available to
+    Nav2's local costmap for collision avoidance.
+    """
+    tolerance = max(0, int(tolerance_cells))
+    dynamic, mapped_wall = set(), set()
+    for x, y in cells:
+        near_mapped_wall = any(
+            raw_static_grid.is_static_obstacle((x + dx, y + dy))
+            for dy in range(-tolerance, tolerance + 1)
+            for dx in range(-tolerance, tolerance + 1)
+        )
+        (mapped_wall if near_mapped_wall else dynamic).add((x, y))
+    return dynamic, mapped_wall
 
 
 def bresenham(start, end):

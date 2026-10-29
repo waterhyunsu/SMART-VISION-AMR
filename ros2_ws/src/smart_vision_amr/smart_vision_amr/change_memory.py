@@ -2,11 +2,13 @@
 
 import hashlib
 import json
+import math
 import os
 import time
 from pathlib import Path
 
 import rclpy
+from geometry_msgs.msg import PoseWithCovarianceStamped
 from nav_msgs.msg import OccupancyGrid
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy, qos_profile_sensor_data
@@ -16,7 +18,7 @@ from std_srvs.srv import Trigger
 from tf2_ros import Buffer, TransformException, TransformListener
 
 from smart_vision_amr.obstacle_memory import ObstacleMemory
-from smart_vision_amr.map_utils import bresenham, world_to_cell
+from smart_vision_amr.map_utils import bresenham, cell_to_world, world_to_cell
 
 
 class ChangeMemoryNode(Node):
@@ -26,6 +28,7 @@ class ChangeMemoryNode(Node):
         self.declare_parameter("scan_topic", "/scan")
         self.declare_parameter("map_frame", "map")
         self.declare_parameter("base_frame", "base_link")
+        self.declare_parameter("odom_frame", "odom")
         self.declare_parameter("memory_path", "~/.ros/smart_vision_amr/environment_memory.json")
         self.declare_parameter("occupied_threshold", 65)
         self.declare_parameter("confirm_observations", 5)
@@ -35,8 +38,17 @@ class ChangeMemoryNode(Node):
         self.declare_parameter("min_observation_interval_sec", 0.25)
         self.declare_parameter("save_every_scans", 5)
         self.declare_parameter("memory_enabled", True)
+        # This short-lived layer is independent of optional persisted memory.
+        self.declare_parameter("live_obstacle_ttl_sec", 2.0)
+        self.declare_parameter("live_scan_max_age_sec", 1.0)
+        self.declare_parameter("live_transform_max_age_sec", 1.0)
+        self.declare_parameter("live_localization_jump_distance", 0.25)
+        self.declare_parameter("live_localization_jump_angle", 0.25)
         self.map = None
         self.memory = None
+        self.live_obstacles = {}
+        self.last_scan_stamp_ns = None
+        self.last_map_to_odom = None
         self.scans_since_save = 0
         self.memory_path = Path(os.path.expanduser(self.get_parameter("memory_path").value))
         self.tf_buffer = Buffer()
@@ -49,6 +61,7 @@ class ChangeMemoryNode(Node):
         self.create_subscription(OccupancyGrid, self.get_parameter("map_topic").value, self.on_map, latched)
         self.create_subscription(LaserScan, self.get_parameter("scan_topic").value,
                                  self.on_scan, qos_profile_sensor_data)
+        self.create_subscription(PoseWithCovarianceStamped, "/initialpose", self.on_initial_pose, 10)
         self.create_service(Trigger, "/smart_vision_amr/save_memory", self.save_service)
         self.create_service(Trigger, "/smart_vision_amr/clear_memory", self.clear_service)
 
@@ -67,6 +80,9 @@ class ChangeMemoryNode(Node):
         if self.map is not None and signature == self.map["signature"]:
             return
         self.map = {"message": msg, "signature": signature}
+        self.live_obstacles.clear()
+        self.last_scan_stamp_ns = None
+        self.last_map_to_odom = None
         path = self.memory_path
         if not self.get_parameter("memory_enabled").value:
             self.memory = self._new_memory(msg)
@@ -84,6 +100,51 @@ class ChangeMemoryNode(Node):
         else:
             self.memory = self._new_memory(msg)
         self.publish_overlay()
+
+    def on_initial_pose(self, message):
+        if message.header.frame_id.lstrip('/') != self.get_parameter("map_frame").value.lstrip('/'):
+            return
+        # These cells were projected using the old localization solution. The
+        # next valid scan rebuilds them; do not announce a fresh empty scan here.
+        self.live_obstacles.clear()
+        self.last_map_to_odom = None
+
+    def reset_live_on_localization_jump(self, target_frame):
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                target_frame, self.get_parameter("odom_frame").value, rclpy.time.Time())
+        except TransformException:
+            return
+        pose = (transform.transform.translation.x, transform.transform.translation.y,
+                self._yaw(transform.transform.rotation))
+        if not all(math.isfinite(value) for value in pose):
+            return
+        previous = self.last_map_to_odom
+        self.last_map_to_odom = pose
+        if previous is None:
+            return
+        delta_yaw = abs(math.atan2(math.sin(pose[2]-previous[2]), math.cos(pose[2]-previous[2])))
+        if (math.hypot(pose[0]-previous[0], pose[1]-previous[1])
+                > self.get_parameter("live_localization_jump_distance").value
+                or delta_yaw > self.get_parameter("live_localization_jump_angle").value):
+            self.live_obstacles.clear()
+            self.get_logger().warning(
+                "Localization frame changed; rebuilding transient LiDAR obstacles from fresh scans")
+
+    @staticmethod
+    def cell_in_unknown_sector(cell, info, sensor_xy, invalid_angles, angular_step):
+        """Retain only cells intersecting an invalid beam's narrow angular cone."""
+        if not invalid_angles:
+            return False
+        x, y = cell_to_world(info, cell)
+        dx, dy = x-sensor_xy[0], y-sensor_xy[1]
+        distance = math.hypot(dx, dy)
+        half_diagonal = info.resolution*math.sqrt(2.)*.5
+        half_width = (abs(angular_step)*.5
+                      + math.asin(min(1., half_diagonal/max(distance, half_diagonal))))
+        bearing = math.atan2(dy, dx)
+        return any(abs(math.atan2(math.sin(angle-bearing), math.cos(angle-bearing))) <= half_width
+                   for angle in invalid_angles)
 
     def _as_grid(self, msg):
         from smart_vision_amr.map_utils import occupancy_to_grid
@@ -103,6 +164,17 @@ class ChangeMemoryNode(Node):
     def on_scan(self, scan):
         if self.map is None or self.memory is None:
             return
+        now_ns = self.get_clock().now().nanoseconds
+        stamp_ns = scan.header.stamp.sec * 1_000_000_000 + scan.header.stamp.nanosec
+        max_age = max(.05, float(self.get_parameter("live_scan_max_age_sec").value))
+        if abs(now_ns-stamp_ns) > max_age * 1e9:
+            return
+        if self.last_scan_stamp_ns is not None and stamp_ns <= self.last_scan_stamp_ns:
+            return
+        if (not all(math.isfinite(value) for value in (scan.angle_min, scan.angle_increment,
+                                                      scan.range_min, scan.range_max))
+                or scan.angle_increment == 0.0 or not 0 <= scan.range_min < scan.range_max):
+            return
         target_frame = self.get_parameter("map_frame").value
         sensor_frame = scan.header.frame_id or self.get_parameter("base_frame").value
         try:
@@ -112,16 +184,35 @@ class ChangeMemoryNode(Node):
         except TransformException as exc:
             self.get_logger().warning(f"Waiting for map-to-base TF: {exc}", throttle_duration_sec=5.0)
             return
+        tf_ns = tf.header.stamp.sec * 1_000_000_000 + tf.header.stamp.nanosec
+        tf_max_age = max(.05, float(self.get_parameter("live_transform_max_age_sec").value))
+        if tf_ns and abs(stamp_ns-tf_ns) > tf_max_age * 1e9:
+            return
+        q = tf.transform.rotation
+        if not all(math.isfinite(value) for value in (tf.transform.translation.x,
+                tf.transform.translation.y, q.x, q.y, q.z, q.w)):
+            return
+        self.reset_live_on_localization_jump(target_frame)
         info = self.map["message"].info
         origin = world_to_cell(info, tf.transform.translation.x, tf.transform.translation.y)
         yaw = self._yaw(tf.transform.rotation)
         occupied_cells, free_cells = set(), set()
+        invalid_angles = []
+        valid_beams = 0
         for index, distance in enumerate(scan.ranges):
             angle = yaw + scan.angle_min + index * scan.angle_increment
+            # NaN, zero/below-minimum and out-of-range packets are not evidence
+            # that the ray is free. Positive infinity is the LaserScan no-hit case.
+            if (math.isnan(distance) or distance == -math.inf
+                    or distance < scan.range_min
+                    or (math.isfinite(distance) and distance > scan.range_max)):
+                invalid_angles.append(angle)
+                continue
+            valid_beams += 1
             valid_hit = scan.range_min <= distance <= scan.range_max and distance < scan.range_max
             ray_length = distance if valid_hit else scan.range_max
-            endpoint = (tf.transform.translation.x + ray_length * __import__("math").cos(angle),
-                        tf.transform.translation.y + ray_length * __import__("math").sin(angle))
+            endpoint = (tf.transform.translation.x + ray_length * math.cos(angle),
+                        tf.transform.translation.y + ray_length * math.sin(angle))
             end_cell = world_to_cell(info, *endpoint)
             ray = list(bresenham(origin, end_cell))
             for cell in ray[:-1] if valid_hit else ray:
@@ -129,9 +220,24 @@ class ChangeMemoryNode(Node):
                     free_cells.add(cell)
             if valid_hit and self._is_free_in_base_map(end_cell):
                 occupied_cells.add(end_cell)
+        if not valid_beams:
+            return
+        self.last_scan_stamp_ns = stamp_ns
         free_cells.difference_update(occupied_cells)
+        now = time.monotonic()
+        ttl = max(.05, float(self.get_parameter("live_obstacle_ttl_sec").value))
+        # Keep briefly occluded returns, but clear a cell as soon as a valid ray
+        # traverses it. A few hardware edge dropouts must not freeze every old
+        # obstacle in the map: protect only each dropout's actual angular cone.
+        # Neither TTL nor relocalization edits the saved SLAM grid.
+        sensor_xy = (tf.transform.translation.x, tf.transform.translation.y)
+        self.live_obstacles = {cell: seen for cell, seen in self.live_obstacles.items()
+                               if self._is_free_in_base_map(cell) and cell not in free_cells
+                               and (now-seen < ttl or self.cell_in_unknown_sector(
+                                   cell, info, sensor_xy, invalid_angles, scan.angle_increment))}
+        self.live_obstacles.update((cell, now) for cell in occupied_cells)
         observed = Int32MultiArray()
-        observed.data = sorted(y * self.memory.width + x for x, y in occupied_cells)
+        observed.data = sorted(y * self.memory.width + x for x, y in self.live_obstacles)
         self.observation_pub.publish(observed)
         if not self.get_parameter("memory_enabled").value:
             return
@@ -209,4 +315,5 @@ def main(args=None):
     finally:
         node.persist()
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()

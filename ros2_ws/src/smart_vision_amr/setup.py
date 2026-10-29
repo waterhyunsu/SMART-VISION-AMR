@@ -19,5 +19,6 @@ setup(
         'astar_planner = smart_vision_amr.astar_planner:main',
         'path_follower = smart_vision_amr.path_follower:main',
         'change_memory = smart_vision_amr.change_memory:main',
+        'motion_mux = smart_vision_amr.motion_mux:main',
     ]},
 )

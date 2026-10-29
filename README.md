@@ -1,10 +1,11 @@
 # SMART-VISION-AMR — TurtleBot3 Waffle Pi 실기 A* 주행
 
-Ubuntu 22.04 / ROS 2 Humble용 첫 버전입니다. Raspberry Pi의 TurtleBot3 bringup과
-Linux PC의 Nav2를 사용합니다. 첨부받은 `classroom_map.yaml` 및 `.pgm`을 포함합니다.
+Ubuntu 22.04 / ROS 2 Humble용 실기 주행 패키지입니다. Raspberry Pi의 TurtleBot3 bringup과
+Linux PC의 Nav2를 사용합니다. 기본 지도는 `classroom_20261027_cleaned.yaml`입니다.
 Gazebo, 카메라, ArUco 기능은 포함하지 않습니다.
 
-다른 워크스테이션에서 이어서 실행할 때는 [진행 상황과 재설치 절차](docs/HANDOFF_2026-10-26.md)를 먼저 확인하세요.
+이전 작업 기록은 [2026-10-26 핸드오프](docs/HANDOFF_2026-10-26.md)에 있습니다.
+이 문서의 실행 명령과 설정은 이후의 주행 통합 버전을 기준으로 합니다.
 
 ## 실행 명령 한눈에 보기
 
@@ -19,30 +20,43 @@ ros2 launch turtlebot3_bringup robot.launch.py use_sim_time:=false
 ```
 
 ```bash
-# Linux PC: 지도, Nav2, A*, 가벼운 RViz
+# Linux PC: 중복 실행 검사 후 지도, Nav2, A*, 주행 명령 중재
 source /opt/ros/humble/setup.bash
-source ~/SMART-VISION-AMR/ros2_ws/install/setup.bash
-export TURTLEBOT3_MODEL=waffle_pi ROS_DOMAIN_ID=16
-ros2 launch smart_vision_amr hardware.launch.py
+cd ~/SMART-VISION-AMR/ros2_ws
+colcon build --symlink-install --packages-select smart_vision_amr
+../scripts/run_classroom_navigation_16.sh
 ```
 
 Pi에서 이미 bringup이 실행 중이면 PC 명령만 실행합니다. 설치 위치가 다르면
-`source` 경로를 바꾸고, `ROS_DOMAIN_ID`는 두 장비에서 기존에 맞춰 둔 값을
-그대로 사용하세요. RViz 화면에서 **2D Pose Estimate**로 시작 위치를 잡고
+`cd` 경로를 바꾸세요. 이 스크립트는 도메인 16, 실제 시간, 저장 지도,
+AMCL, 동작 명령 중재 및 장애물 기억을 사용하고 RViz는 열지 않습니다.
+별도 터미널에서 RViz를 열고 **2D Pose Estimate**로 시작 위치를 잡은 뒤
 **2D Goal Pose**로 도착지를 지정합니다.
 
 ## 구성
 
-`/smart_vision_amr/goal` → A* (`/smart_vision_amr/path`) → Nav2 `/follow_path`
-→ Nav2 controller `/cmd_vel` → TurtleBot3. `/scan` 관측은 A*의 동적 장애물
-회피에 사용하고, Nav2 local costmap이 근거리 충돌 검사를 담당합니다.
+`/smart_vision_amr/goal` → 여유 거리 비용을 사용하는 A* (`/smart_vision_amr/path`)
+→ Nav2 `/follow_path` → `/smart_vision_amr/navigation_cmd_vel`
+→ motion mux `/cmd_vel` → TurtleBot3입니다. `/scan` 관측은 현재 장애물 회피에
+즉시 사용하고, 확인된 장애물은 지도와 별도 파일에 기억합니다. 경로가 막히면
+목표를 유지한 채 재탐색하고, 뒤쪽 안전 조건이 만족되면 제한적으로 후진합니다.
 
 > **적응형 장애물 기억 기준:** 같은 지도 셀이 장애물로 **5회 이상 관측되고,
 > 첫 관측부터 최소 2초가 지난 경우에만** 기억 셀로 확정합니다. 두 조건을
 > 모두 만족해야 합니다. 확정된 셀은 A*가 장애물로 취급하고, 변경된 셀이 현재
 > 경로를 막으면 새 경로를 계산합니다. 기억은 기본적으로 켜져 있으며,
-> `~/.ros/smart_vision_amr/classroom_memory.json`에 저장됩니다.
+> `~/.ros/smart_vision_amr/classroom_memory.json`에 저장됩니다. 현재 관측은
+> 기억 확정 전에도 경로 계획에 반영됩니다.
 > 셀이 비어 있는 것으로 5회 이상, 최소 2초간 관측되면 기억에서 해제합니다.
+
+현재 라이다가 지도 벽에서 2셀(10cm) 이내로 잡힌 경우, A*는 지도 벽의
+반사 위치 오차로 보고 현재 관측의 이중 팽창을 피합니다. 다만 **확정된 기억
+셀에는 전체 5셀(25cm) 안전 반경을 적용합니다.** 벽 가까운 실제 장애물이
+가려졌을 때도 안전거리를 유지하기 위해서입니다. 지도 벽의 반사 오차가
+반복되어 기억 셀로 확정되면 좁은 통로의 경로가 막힐 수 있습니다. 그때는
+지도·위치 추정·라이다를 확인하고, 잘못된 기억임을 확인한 경우에만
+`ros2 service call /smart_vision_amr/clear_memory std_srvs/srv/Trigger '{}'`로
+기억을 지우세요.
 
 ## 1. 로봇 Raspberry Pi
 
@@ -88,7 +102,7 @@ colcon build --symlink-install
 source install/setup.bash
 export TURTLEBOT3_MODEL=waffle_pi
 python3 ../scripts/install_tf2_02520_overlay.py  # tf2 0.25.21~0.25.24인 PC에서 1회
-ros2 launch smart_vision_amr hardware.launch.py
+../scripts/run_classroom_navigation_16.sh
 ```
 
 Humble의 `tf2` 0.25.23에서 Nav2 TF 수신이 멈추고, 로컬 코스트맵은 오래된
@@ -98,16 +112,16 @@ ROS 공식 2026-07-02 스냅샷의 서명과 패키지 해시를 검증한 뒤 �
 수정하지 않습니다. 해당 버전의 `tf2`가 설치된 PC에서는 `hardware.launch.py`가
 이 로컬 버전을 자동으로 사용하고, 로컬 버전이 없으면 주행 런치를 중단합니다.
 Nav2는 기본적으로 노드를 개별 프로세스로 실행합니다.
-실기 진단 중에는 컨트롤러의 전진 속도를 최대 0.16 m/s, 회전 속도를
-최대 0.5 rad/s로 제한합니다.
+현재 교실 설정의 DWB 상한은 전진 0.12m/s, 회전 1.0rad/s입니다.
+위치 도착 허용 오차와 최종 회전 진입 거리 기준은 모두 0.15m입니다.
 
-이 launch는 가벼운 RViz 화면도 함께 엽니다. 지도, 로봇 위치 축, A* 경로만
-표시하며 화면 갱신을 10 FPS로 제한합니다. LaserScan 점군, 로봇 3D 모델,
-Nav2 costmap 화면은 표시하지 않습니다. GUI가 필요 없는 진단 실행은
-`ros2 launch smart_vision_amr hardware.launch.py use_rviz:=false`입니다.
+기본 교실 실행 스크립트는 RViz를 열지 않습니다. 별도 PC 터미널에서
+`ros2 run rviz2 rviz2 -d ~/SMART-VISION-AMR/ros2_ws/src/smart_vision_amr/rviz/minimal.rviz`
+로 열 수 있습니다. 직접 `ros2 launch smart_vision_amr hardware.launch.py`를
+실행하면 RViz도 열리지만, 중복 실행 검사를 포함한 스크립트 사용을 권장합니다.
 
-기본 Nav2 설정은 설치된 `turtlebot3_navigation2/param/humble/waffle_pi.yaml`을
-사용합니다. 지도는 저장소에 포함된 교실 지도입니다. 실제 지도와 로봇 위치가
+기본 Nav2 설정은 저장소의 `config/curve_tuning_waffle_pi.yaml`을 사용합니다.
+지도는 정리된 교실 지도입니다. 실제 지도와 로봇 위치가
 맞아야 합니다. 다른 지도를 사용하려면 `map:=/절대경로/map.yaml`을 지정합니다.
 
 ## 3. 주행 전 확인
@@ -123,7 +137,7 @@ ros2 action list | grep follow_path
 ros2 lifecycle get /controller_server
 ```
 
-자동으로 열린 RViz에서 실제 위치에 맞춰 **2D Pose Estimate**를 지정한 뒤
+별도 터미널에서 연 RViz에서 실제 위치에 맞춰 **2D Pose Estimate**를 지정한 뒤
 `ros2 run tf2_ros tf2_echo map base_footprint`가 연속적으로 출력되는지
 확인합니다. 지도와 위치 추정이 맞지 않으면 목표를 보내지 마세요.
 또한 `/local_costmap/published_footprint`의 `header.stamp`가 현재 시간에 맞게
@@ -150,10 +164,8 @@ ros2 topic echo /cmd_vel
 
 중단은 `ros2 service call /smart_vision_amr/cancel_navigation std_srvs/srv/Trigger '{}'`입니다.
 첫 주행은 바퀴를 띄워 방향을 확인하고, 이후 넓은 공간에서 저속으로 수행하세요.
-실제 장비에서 짧은 거리와 중거리 주행, 목표 방향 정렬은 확인했습니다.
-장거리 반복 주행과 장애물 우회는 추가 검증이 필요합니다. 마지막 실기 시험은
-로봇의 OpenCR 통신 오류와 bringup 종료로 중단되어, 충전 후 하드웨어 상태를
-먼저 확인해야 합니다.
+팀원 코드의 Sector 3 → Sector 2 → Home 실차 성공 기록이 있습니다. 이 저장소에서
+통합한 버전은 코드 시험과 빌드를 거쳤으며 실차 통합 주행 확인은 남아 있습니다.
 
 ## 문제를 좁히는 순서
 
@@ -163,9 +175,9 @@ ros2 topic echo /cmd_vel
 4. FollowPath가 실패하면 controller 로그, local costmap, `/scan`을 확인합니다.
 5. `/cmd_vel`이 나오는데 바퀴가 돌지 않으면 Pi의 OpenCR/모터 쪽을 확인합니다.
 
-`config/nodes.yaml`의 `obstacle_inflation_cells`는 0.05 m 해상도 기준
+`config/classroom_hardware_nodes.yaml`의 `obstacle_inflation_cells`는 0.05 m 해상도 기준
 5셀(0.25 m)입니다. 실제 통로 폭과 로봇 외형을 확인한 뒤 조정하세요.
-Nav2의 controller/local costmap은 설치된 TurtleBot3 Humble 설정을 따릅니다.
+Nav2의 controller/local costmap은 저장소의 교실 튜닝 설정을 따릅니다.
 
 ## 출처
 

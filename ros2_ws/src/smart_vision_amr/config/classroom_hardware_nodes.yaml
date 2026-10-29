@@ -1,0 +1,55 @@
+/astar_planner:
+  ros__parameters:
+    map_topic: /map
+    map_frame: map
+    base_frame: base_footprint
+    occupied_threshold: 65
+    # 5 cells * 0.05 m = 0.25 m. Keeps the supplied Sector 1 coordinate valid.
+    # Offline paths retain >=0.275 m from raw occupied/unknown cell areas.
+    obstacle_inflation_cells: 5
+    # A LiDAR hit at a mapped wall or within 2 cells (0.10 m) of it is
+    # treated as the same wall for A* planning. This prevents double inflation
+    # from closing narrow passages; Nav2 still receives every raw /scan hit.
+    mapped_wall_return_tolerance_cells: 2
+    robot_radius: 0.22
+    start_egress_enabled: true
+    start_egress_clearance_margin: 0.02
+    start_egress_max_cells: 7
+    # The live LiDAR overlay works even while persisted memory is disabled.
+    live_obstacle_layer_required: true
+    live_obstacle_timeout: 2.0
+    # Choose the wider route when multiple collision-free A* routes exist.
+    # These add only travel cost; unknown/occupied cells and 5-cell inflation
+    # remain impassable. They cannot create a route through a sealed corridor.
+    preferred_clearance: 0.45
+    clearance_penalty_gain: 1.5
+    # A bounded escape is allowed only after a continuous straight forward
+    # history, physical footprint margin, fresh LiDAR and a reachable A* exit.
+    # Nav2 /backup checks collisions throughout motion; failure keeps the goal.
+    reverse_recovery_enabled: true
+    reverse_recovery_min_distance: 0.10
+    reverse_recovery_max_distance: 0.30
+    reverse_recovery_clearance_margin: 0.02
+    reverse_recovery_speed: 0.04
+    reverse_recovery_max_attempts: 3
+/path_follower:
+  ros__parameters:
+    action_name: /follow_path
+    controller_id: FollowPath
+    goal_checker_id: general_goal_checker
+/change_memory:
+  ros__parameters:
+    map_topic: /map
+    scan_topic: /scan
+    map_frame: map
+    base_frame: base_footprint
+    occupied_threshold: 65
+    confirm_observations: 5
+    clear_observations: 5
+    confirm_min_duration_sec: 2.0
+    clear_min_duration_sec: 2.0
+    min_observation_interval_sec: 0.25
+    save_every_scans: 5
+    live_obstacle_ttl_sec: 2.0
+    live_scan_max_age_sec: 1.0
+    live_transform_max_age_sec: 1.0
