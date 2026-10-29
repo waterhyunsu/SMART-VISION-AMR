@@ -12,6 +12,12 @@ class MotionMuxTest(unittest.TestCase):
         self.mux = MotionMuxCore(clock=lambda: self.now)
         self.seq = 0
 
+    def test_default_velocity_limits_match_previous_classroom_caps(self):
+        self.assertEqual(self.mux.max_linear_velocity, 0.16)
+        self.assertEqual(self.mux.max_angular_velocity, 0.5)
+        self.assertTrue(self.mux.receive_auto(0.25, 1.0))
+        self.assertEqual(self.mux.auto_velocity, (0.16, 0.5))
+
     def control(self, mode, source='web-a', **values):
         self.seq += 1
         payload = {'source_id': source, 'seq': self.seq, 'mode': mode,
@@ -148,10 +154,10 @@ class MotionMuxTest(unittest.TestCase):
 
     def test_untrusted_velocities_are_bounded_at_the_final_output(self):
         self.control('manual', linear=100, angular=-100)
-        self.assertEqual(self.mux.output(), (.25, -1.0))
+        self.assertEqual(self.mux.output(), (.16, -.5))
         self.control('auto')
         self.mux.receive_auto(-100, 100)
-        self.assertEqual(self.mux.output(), (-.25, 1.0))
+        self.assertEqual(self.mux.output(), (-.16, .5))
 
     def test_invalid_auto_input_clears_previously_valid_velocity(self):
         self.mux.receive_auto(.1, .2)

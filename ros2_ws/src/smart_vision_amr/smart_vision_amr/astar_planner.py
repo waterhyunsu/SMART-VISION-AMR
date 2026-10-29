@@ -17,8 +17,7 @@ from smart_vision_amr.astar import AStarPlanner
 from smart_vision_amr.clearance_cost import clearance_penalties
 from smart_vision_amr.grid import Grid
 from smart_vision_amr.map_utils import (cell_to_world, inflate_cells, occupancy_to_grid,
-                                        split_mapped_wall_returns, world_to_cell,
-                                        yaw_from_quaternion)
+                                        world_to_cell, yaw_from_quaternion)
 from smart_vision_amr.reverse_recovery import (Breadcrumb, GridGeometry,
                                                select_reverse_egress)
 
@@ -31,7 +30,6 @@ class AStarPlannerNode(Node):
         self.declare_parameter("base_frame", "base_link")
         self.declare_parameter("occupied_threshold", 65)
         self.declare_parameter("obstacle_inflation_cells", 2)
-        self.declare_parameter("mapped_wall_return_tolerance_cells", 0)
         self.declare_parameter("replan_retry_period", 2.0)
         self.declare_parameter("robot_radius", 0.22)
         self.declare_parameter("start_egress_enabled", True)
@@ -110,8 +108,7 @@ class AStarPlannerNode(Node):
         inflation = self.get_parameter("obstacle_inflation_cells").value
         self.map = (msg, occupancy_to_grid(msg, threshold, inflation))
         self.raw_static_grid = occupancy_to_grid(msg, threshold, 0)
-        self.map_signature = (threshold, inflation,
-                              self.get_parameter("mapped_wall_return_tolerance_cells").value)
+        self.map_signature = (threshold, inflation)
         if self._goal_is_active():
             if getattr(self, "recovery_active", False):
                 if map_replaced and not self.recovery_cancel_due_map_change:
@@ -146,8 +143,7 @@ class AStarPlannerNode(Node):
         """Retry no-path, missing-map and missing-TF conditions without losing the goal."""
         if self.map is not None:
             signature = (self.get_parameter("occupied_threshold").value,
-                         self.get_parameter("obstacle_inflation_cells").value,
-                         self.get_parameter("mapped_wall_return_tolerance_cells").value)
+                         self.get_parameter("obstacle_inflation_cells").value)
             if signature != getattr(self, "map_signature", None):
                 self.on_map(self.map[0])
         if self._goal_is_active() and not getattr(self, "recovery_active", False):
@@ -324,35 +320,24 @@ class AStarPlannerNode(Node):
             self.observed = updated
             # Laser scans vary at sensor frequency. Stop on a newly blocked
             # route, and rate-limit recovery even when no planned cells remain.
+            # The observation publisher already removed geometrically matched
+            # static-wall echoes, so do not apply a second cell-distance filter.
             if self._goal_is_active() and (self.waiting_for_replan
-                    or self._changes_block_path(added, filter_near_wall=True)):
-                if self._changes_block_path(added, filter_near_wall=True):
+                    or self._changes_block_path(added)):
+                if self._changes_block_path(added):
                     self._invalidate_path("Observed obstacle intersects the route")
                 self._request_replan("Observed obstacles changed")
         elif self.waiting_for_replan and self._goal_is_active():
             # Fresh empty/unchanged scans also recover a stale-sensor hold.
             self._request_replan("LiDAR obstacle observations restored")
 
-    def _changes_block_path(self, cells, *, filter_near_wall=False):
+    def _changes_block_path(self, cells):
         if not cells or not self.planned_cells:
             return False
         width, height = self.map[0].info.width, self.map[0].info.height
         inflation = self.get_parameter("obstacle_inflation_cells").value
-        effective = (self._split_mapped_wall_returns(cells)[0]
-                     if filter_near_wall else cells)
-        blocked = inflate_cells(effective, width, height, inflation)
+        blocked = inflate_cells(cells, width, height, inflation)
         return any(cell in blocked for cell in self.planned_cells)
-
-    def _split_mapped_wall_returns(self, cells):
-        raw_grid = getattr(self, "raw_static_grid", None)
-        if raw_grid is None:
-            map_msg = self.map[0]
-            raw_grid = occupancy_to_grid(map_msg,
-                                         self.get_parameter("occupied_threshold").value, 0)
-            self.raw_static_grid = raw_grid
-        return split_mapped_wall_returns(
-            cells, raw_grid,
-            self.get_parameter("mapped_wall_return_tolerance_cells").value)
 
     def on_goal(self, goal):
         stamp_ns = goal.header.stamp.sec * 1_000_000_000 + goal.header.stamp.nanosec
@@ -566,8 +551,7 @@ class AStarPlannerNode(Node):
             return
         map_msg, grid = self.map
         signature = (self.get_parameter("occupied_threshold").value,
-                     self.get_parameter("obstacle_inflation_cells").value,
-                     self.get_parameter("mapped_wall_return_tolerance_cells").value)
+                     self.get_parameter("obstacle_inflation_cells").value)
         if signature != getattr(self, "map_signature", None):
             grid = occupancy_to_grid(map_msg, signature[0], signature[1])
             self.map = (map_msg, grid)
@@ -593,11 +577,11 @@ class AStarPlannerNode(Node):
         end = world_to_cell(map_msg.info, goal.pose.position.x, goal.pose.position.y)
         width, height = map_msg.info.width, map_msg.info.height
         inflation = self.get_parameter("obstacle_inflation_cells").value
-        # A confirmed near-wall hit could be an echo or a real object. Keep
-        # full footprint clearance for persistent memory; only transient
-        # returns use the wall-matching heuristic.
+        # The change-memory node classifies each scan by comparing its measured
+        # range with the first raw-map obstacle along that beam. These observed
+        # cells are dynamic obstacles; expected static-wall echoes are absent.
         remembered_effective = self.remembered
-        observed_effective, observed_wall = self._split_mapped_wall_returns(self.observed)
+        observed_effective = self.observed
         remembered_blocked = inflate_cells(remembered_effective, width, height, inflation)
         observed_blocked = inflate_cells(observed_effective, width, height, inflation)
         blocked = remembered_blocked | observed_blocked
@@ -659,12 +643,10 @@ class AStarPlannerNode(Node):
                 f"remembered_goal={end in remembered_blocked}, "
                 f"observed_goal={end in observed_blocked}, "
                 f"observed_raw={len(self.observed)}, "
-                f"observed_near_map_wall={len(observed_wall)}, "
-                f"observed_effective={len(observed_effective)}, "
+                f"observed_dynamic={len(observed_effective)}, "
                 f"observed_inflated={len(observed_blocked)}, "
                 f"remembered_raw={len(self.remembered)}, "
                 f"remembered_inflated={len(remembered_blocked)}, "
-                f"wall_match_tolerance_cells={signature[2]}, "
                 f"static_reference_cells={len(reference_path)}, "
                 f"static_reference_dynamic_hits={len(reference_hits)}, "
                 f"first_blocked_reference_cells={reference_hits[:8]})",

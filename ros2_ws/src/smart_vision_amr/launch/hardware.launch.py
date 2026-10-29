@@ -101,7 +101,7 @@ def generate_launch_description():
             ),
         ]),
         Node(package='smart_vision_amr', executable='motion_mux', name='motion_mux',
-             parameters=[{'use_sim_time': False}], output='screen',
+             parameters=[nodes, {'use_sim_time': False}], output='screen',
              condition=IfCondition(LaunchConfiguration('use_motion_mux'))),
         Node(package='smart_vision_amr', executable='astar_planner', name='astar_planner',
              parameters=[nodes, {'use_sim_time': False}], output='screen'),

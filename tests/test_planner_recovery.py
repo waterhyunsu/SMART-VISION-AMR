@@ -24,8 +24,7 @@ class PlannerHarness(AStarPlannerNode):
                        "replan_retry_period": 2.0, "robot_radius": 0.22,
                        "start_egress_enabled": True, "start_egress_clearance_margin": 0.02,
                        "start_egress_max_cells": 7, "live_obstacle_layer_required": False,
-                       "live_obstacle_timeout": 2.0,
-                       "mapped_wall_return_tolerance_cells": 0}
+                       "live_obstacle_timeout": 2.0}
         self.params["preferred_clearance"] = 0.45
         self.params["clearance_penalty_gain"] = 1.5
         self.params.update({"reverse_recovery_enabled": True,
@@ -165,7 +164,7 @@ class PlannerRecoveryTests(unittest.TestCase):
         map_msg = make_reverse_egress_map()
         self.node.map = map_msg, occupancy_to_grid(map_msg, 65, 5)
         self.node.raw_static_grid = occupancy_to_grid(map_msg, 65, 0)
-        self.node.map_signature = (65, 5, 0)
+        self.node.map_signature = (65, 5)
         self.node.params['obstacle_inflation_cells'] = 5
 
     def forward_trail_to_inflated_start(self, final_x=.35):
@@ -558,45 +557,50 @@ class PlannerRecoveryTests(unittest.TestCase):
         goal.pose.position.x, goal.pose.position.y = .375, .925
         return goal
 
-    def test_near_wall_lidar_returns_do_not_double_inflate_shut_corridor(self):
-        goal = self.narrow_corridor()
-        self.node.observed = {(2, 10), (13, 10)}
-        self.node.on_goal(goal)
-        self.assertFalse(self.node.planned_cells)
-        diagnostic = self.node.logger.error.call_args.args[0]
-        self.assertIn('observed_raw=2', diagnostic)
-        self.assertIn('static_reference_dynamic_hits=', diagnostic)
-        self.assertIn('first_blocked_reference_cells=', diagnostic)
+    def test_wall_adjacent_dynamic_obstacle_invalidates_and_detours_active_route(self):
+        msg = OccupancyGrid()
+        msg.header.frame_id = 'map'
+        msg.info.resolution = .05
+        msg.info.width = msg.info.height = 50
+        msg.info.origin.orientation.w = 1.0
+        msg.data = [0] * (50 * 50)
+        for index in range(50):
+            msg.data[index] = msg.data[49 * 50 + index] = 100
+            msg.data[index * 50] = msg.data[index * 50 + 49] = 100
+        self.node.params['obstacle_inflation_cells'] = 5
+        self.node.params['preferred_clearance'] = 0.0
+        self.node.params['clearance_penalty_gain'] = 0.0
+        self.node.on_map(msg)
+        start_x = 43.5 * .05
+        start_y = 10.5 * .05
+        tf = self.node.tf_buffer.lookup_transform.return_value
+        tf.transform.translation.x = start_x
+        tf.transform.translation.y = start_y
+        goal = make_goal()
+        goal.pose.position.x = start_x
+        goal.pose.position.y = 40.5 * .05
 
-        self.node.params['mapped_wall_return_tolerance_cells'] = 2
-        self.now.return_value = 102.1
-        self.node.retry_transform()
-        self.assertTrue(self.node.planned_cells)
-        self.assertIs(self.node.last_goal, goal)
-        self.assertEqual(self.node.observed, {(2, 10), (13, 10)})
-        self.assertEqual(self.node.params['obstacle_inflation_cells'], 5)
-
-    def test_wall_match_does_not_hide_new_obstacle_in_corridor(self):
-        goal = self.narrow_corridor()
-        self.node.params['mapped_wall_return_tolerance_cells'] = 2
         self.node.on_goal(goal)
-        self.assertTrue(self.node.planned_cells)
+        self.assertIn((43, 25), self.node.planned_cells)
+        old_path = list(self.node.planned_cells)
+
+        # Cell (47, 25) is only two cells from the mapped right wall. A real
+        # closer-than-wall scan return must still cancel the current route.
         self.now.return_value = 100.1
-        self.node.on_observed(Int32MultiArray(data=[10 * 16 + 2, 10 * 16 + 13]))
-        self.assertTrue(self.node.planned_cells)
-        self.node.on_observed(Int32MultiArray(data=[10 * 16 + 8]))
+        self.node.on_observed(Int32MultiArray(data=[25 * 50 + 47]))
         self.assertFalse(self.node.planned_cells)
+        self.assertTrue(self.node.waiting_for_replan)
+
         self.now.return_value = 102.1
         self.node.retry_transform()
-        self.assertTrue(self.node.waiting_for_replan)
-        self.assertFalse(self.node.planned_cells)
-        diagnostic = self.node.logger.error.call_args.args[0]
-        self.assertIn('observed_effective=1', diagnostic)
-        self.assertIn('observed_near_map_wall=0', diagnostic)
+        self.assertTrue(self.node.planned_cells)
+        self.assertNotEqual(self.node.planned_cells, old_path)
+        self.assertTrue(all(cell[0] < 42 or not 20 <= cell[1] <= 30
+                            for cell in self.node.planned_cells))
+        self.assertIs(self.node.last_goal, goal)
 
     def test_confirmed_wall_edge_memory_keeps_full_footprint_clearance(self):
         goal = self.narrow_corridor()
-        self.node.params['mapped_wall_return_tolerance_cells'] = 2
         self.node.remembered = {(2, 10), (13, 10)}
         self.node.on_goal(goal)
         self.assertFalse(self.node.planned_cells)
@@ -604,7 +608,6 @@ class PlannerRecoveryTests(unittest.TestCase):
 
     def test_new_wall_edge_memory_stops_route_that_loses_full_clearance(self):
         goal = self.narrow_corridor()
-        self.node.params['mapped_wall_return_tolerance_cells'] = 2
         self.node.on_goal(goal)
         self.assertTrue(self.node.planned_cells)
         self.node.on_memory(Int32MultiArray(data=[10 * 16 + 2, 10 * 16 + 13]))
@@ -613,7 +616,6 @@ class PlannerRecoveryTests(unittest.TestCase):
 
     def test_confirmed_obstacle_away_from_wall_still_blocks_corridor(self):
         goal = self.narrow_corridor()
-        self.node.params['mapped_wall_return_tolerance_cells'] = 2
         self.node.remembered = {(8, 10)}
         self.node.on_goal(goal)
         self.assertFalse(self.node.planned_cells)

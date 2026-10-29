@@ -22,7 +22,7 @@ class MotionMuxCore:
     }
 
     def __init__(self, clock=time.monotonic, manual_timeout=.5, auto_timeout=.5,
-                 max_linear_velocity=.25, max_angular_velocity=1.0):
+                 max_linear_velocity=.16, max_angular_velocity=.5):
         self.clock = clock
         self.manual_timeout = float(manual_timeout)
         self.auto_timeout = float(auto_timeout)
@@ -188,7 +188,7 @@ class MotionMuxNode(Node):
         super().__init__('motion_mux', context=context, parameter_overrides=overrides)
         for name, default in (
                 ('manual_timeout', .5), ('auto_timeout', .5),
-                ('max_linear_velocity', .25), ('max_angular_velocity', 1.0)):
+                ('max_linear_velocity', .16), ('max_angular_velocity', .5)):
             self.declare_parameter(name, default)
         self.core = MotionMuxCore(**{
             name: self.get_parameter(name).value for name in (

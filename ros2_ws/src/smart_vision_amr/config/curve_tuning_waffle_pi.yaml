@@ -1,5 +1,5 @@
 # Hardware tuning source copied from TurtleBot3 Nav2 Humble waffle_pi.yaml.
-# Starting trial: 0.12 m/s and the shorter DWB plan window tested in the maze.
+# Previous classroom caps: 0.16 m/s linear and 0.5 rad/s angular.
 # The remaining hardware Nav2 settings retain their source defaults.
 # Classroom navigation preset; robot-specific validation remains required after integration.
 amcl:
@@ -132,11 +132,11 @@ controller_server:
       debug_trajectory_details: True
       min_vel_x: 0.0
       min_vel_y: 0.0
-      max_vel_x: 0.12
+      max_vel_x: 0.16
       max_vel_y: 0.0
-      max_vel_theta: 1.0
+      max_vel_theta: 0.5
       min_speed_xy: 0.0
-      max_speed_xy: 0.12
+      max_speed_xy: 0.16
       min_speed_theta: 0.0
       # Add high threshold velocity for turtlebot 3 issue.
       # https://github.com/ROBOTIS-GIT/turtlebot3_simulations/issues/75
@@ -337,9 +337,24 @@ recoveries_server:
     transform_timeout: 0.1
     use_sim_time: true
     simulate_ahead_time: 2.0
-    max_rotational_vel: 1.0
+    max_rotational_vel: 0.5
     min_rotational_vel: 0.4
     rotational_acc_lim: 3.2
+
+velocity_smoother:
+  ros__parameters:
+    use_sim_time: false
+    smoothing_frequency: 20.0
+    scale_velocities: false
+    feedback: "OPEN_LOOP"
+    max_velocity: [0.16, 0.0, 0.5]
+    min_velocity: [-0.16, 0.0, -0.5]
+    max_accel: [2.5, 0.0, 3.2]
+    max_decel: [-2.5, 0.0, -3.2]
+    odom_topic: "odom"
+    odom_duration: 0.1
+    deadband_velocity: [0.0, 0.0, 0.0]
+    velocity_timeout: 1.0
 
 # Nav2 Humble uses behavior_server (the legacy recoveries_server block above
 # is retained for existing saved tuning, but is not consumed by Humble).

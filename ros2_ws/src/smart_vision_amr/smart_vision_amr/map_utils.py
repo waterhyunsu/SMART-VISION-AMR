@@ -1,6 +1,6 @@
 """OccupancyGrid conversion helpers shared by the ROS nodes."""
 
-from math import cos, sin, atan2, floor
+from math import atan2, cos, floor, isfinite, sin
 
 from smart_vision_amr.grid import Grid
 
@@ -26,15 +26,17 @@ def cell_to_world(info, cell):
             info.origin.position.y + sin(yaw) * lx + cos(yaw) * ly)
 
 
-def occupancy_to_grid(message, occupied_threshold=65, inflation_cells=0):
+def occupancy_to_grid(message, occupied_threshold=65, inflation_cells=0,
+                      unknown_is_obstacle=True):
     width, height = message.info.width, message.info.height
     rows = []
     for y in range(height):
         row = []
         for x in range(width):
             value = message.data[y * width + x]
-            # Unknown is conservatively blocked for global planning.
-            row.append(value < 0 or value >= occupied_threshold)
+            # Unknown is conservatively blocked for global planning, but can be
+            # excluded when building a known-wall-only LiDAR ray reference.
+            row.append((unknown_is_obstacle and value < 0) or value >= occupied_threshold)
         rows.append(tuple(row))
     if inflation_cells > 0:
         # Expand only from source rows. Blocked/unknown cells are already true,
@@ -63,25 +65,74 @@ def inflate_cells(cells, width, height, radius):
     return result
 
 
-def split_mapped_wall_returns(cells, raw_static_grid, tolerance_cells):
-    """Separate dynamic returns from near-coincident mapped wall returns.
+def first_static_obstacle_distance(info, grid, origin_x, origin_y, angle, max_distance):
+    """Return the first raw-map obstacle entry distance along a world-frame ray.
 
-    A LiDAR endpoint a cell or two away from a mapped wall can be caused by
-    localization/rasterization error. Inflating that endpoint *again* can close
-    a narrow corridor already protected by static map inflation. Only the A*
-    overlay consumes this filtered set; the raw LaserScan is still available to
-    Nav2's local costmap for collision avoidance.
+    The traversal uses the map's rotated local grid and checks both side cells
+    when a ray crosses a grid corner. Leaving the known map is not treated as a
+    mapped wall. The caller controls whether unknown cells block ``grid``; the
+    LiDAR wall-echo classifier should pass a known-occupied-only grid.
     """
-    tolerance = max(0, int(tolerance_cells))
-    dynamic, mapped_wall = set(), set()
-    for x, y in cells:
-        near_mapped_wall = any(
-            raw_static_grid.is_static_obstacle((x + dx, y + dy))
-            for dy in range(-tolerance, tolerance + 1)
-            for dx in range(-tolerance, tolerance + 1)
-        )
-        (mapped_wall if near_mapped_wall else dynamic).add((x, y))
-    return dynamic, mapped_wall
+    resolution = float(info.resolution)
+    values = (resolution, float(origin_x), float(origin_y), float(angle), float(max_distance))
+    if not all(isfinite(value) for value in values) or resolution <= 0 or max_distance < 0:
+        return None
+
+    origin = info.origin
+    map_yaw = yaw_from_quaternion(origin.orientation)
+    dx_world = origin_x - origin.position.x
+    dy_world = origin_y - origin.position.y
+    local_x = (cos(map_yaw) * dx_world + sin(map_yaw) * dy_world) / resolution
+    local_y = (-sin(map_yaw) * dx_world + cos(map_yaw) * dy_world) / resolution
+    direction_x = cos(angle - map_yaw)
+    direction_y = sin(angle - map_yaw)
+    cell_x, cell_y = floor(local_x), floor(local_y)
+    cell = (cell_x, cell_y)
+    if not grid.contains(cell):
+        return None
+    if grid.is_static_obstacle(cell):
+        return 0.0
+
+    step_x = 1 if direction_x > 0 else -1 if direction_x < 0 else 0
+    step_y = 1 if direction_y > 0 else -1 if direction_y < 0 else 0
+    delta_x = resolution / abs(direction_x) if step_x else float("inf")
+    delta_y = resolution / abs(direction_y) if step_y else float("inf")
+    next_x = (((cell_x + 1 - local_x) * resolution / direction_x)
+              if step_x > 0 else
+              ((local_x - cell_x) * resolution / -direction_x)
+              if step_x < 0 else float("inf"))
+    next_y = (((cell_y + 1 - local_y) * resolution / direction_y)
+              if step_y > 0 else
+              ((local_y - cell_y) * resolution / -direction_y)
+              if step_y < 0 else float("inf"))
+
+    while True:
+        entry = min(next_x, next_y)
+        if entry > max_distance:
+            return None
+        if abs(next_x - next_y) <= 1e-12:
+            # At an exact corner the ray touches both side cells. Treat either
+            # occupied side as the first collision, even if the diagonal is free.
+            side_cells = ((cell_x + step_x, cell_y), (cell_x, cell_y + step_y))
+            if any(grid.contains(side) and grid.is_static_obstacle(side)
+                   for side in side_cells):
+                return max(0.0, entry)
+            cell_x += step_x
+            cell_y += step_y
+            next_x += delta_x
+            next_y += delta_y
+        elif next_x < next_y:
+            cell_x += step_x
+            next_x += delta_x
+        else:
+            cell_y += step_y
+            next_y += delta_y
+
+        cell = (cell_x, cell_y)
+        if not grid.contains(cell):
+            return None
+        if grid.is_static_obstacle(cell):
+            return max(0.0, entry)
 
 
 def bresenham(start, end):

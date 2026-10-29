@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from geometry_msgs.msg import PoseWithCovarianceStamped, TransformStamped
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, TransformStamped
 from nav_msgs.msg import OccupancyGrid
 from sensor_msgs.msg import LaserScan
 
@@ -19,14 +19,17 @@ class ScanHarness(ChangeMemoryNode):
                        'occupied_threshold': 65, 'confirm_observations': 5,
                        'clear_observations': 5, 'confirm_min_duration_sec': 2.,
                        'clear_min_duration_sec': 2., 'min_observation_interval_sec': .25,
+                       'save_every_scans': 0,
                        'live_obstacle_ttl_sec': 2., 'live_scan_max_age_sec': 1.,
                        'live_transform_max_age_sec': 1.,
+                       'mapped_wall_return_tolerance_cells': 1,
                        'live_localization_jump_distance': .25,
                        'live_localization_jump_angle': .25}
         self.map = self.memory = None
         self.memory_path = Path('/this-test-never-writes-memory.json')
         self.live_obstacles = {}
         self.last_scan_stamp_ns = None
+        self.scans_since_save = 0
         self.observation_pub, self.overlay_pub, self.logger = Mock(), Mock(), Mock()
         self.tf_buffer = Mock()
         self.transform = TransformStamped()
@@ -258,3 +261,93 @@ def test_scan_to_live_overlay_to_astar_detour_uses_same_goal_without_slam_map_wr
             assert (2, 1) not in planner.planned_cells
             assert planner.last_goal is goal
             assert all(value == 0 for value in sensor.map['message'].data)
+
+
+def test_wall_echo_is_suppressed_but_nearer_wall_adjacent_object_is_live_and_remembered(tmp_path):
+    with harness() as node:
+        node.params['memory_enabled'] = True
+        node.memory_path = tmp_path / 'memory.json'
+        msg = OccupancyGrid()
+        msg.header.frame_id = 'map'
+        msg.info.resolution = .05
+        msg.info.width = msg.info.height = 50
+        msg.info.origin.orientation.w = 1.
+        msg.data = [0] * (50 * 50)
+        for index in range(50):
+            msg.data[index] = msg.data[49 * 50 + index] = 100
+            msg.data[index * 50] = msg.data[index * 50 + 49] = 100
+        node.on_map(msg)
+        node.transform.transform.translation.x = 43.5 * .05
+        node.transform.transform.translation.y = 10.5 * .05
+
+        wall_clock = patch('smart_vision_amr.change_memory.time.time', return_value=100.0)
+        observed_at = wall_clock.start()
+        try:
+            # The wall begins at 0.275 m along this beam; a return 0.025 m early
+            # agrees with the mapped wall within the one-cell range tolerance.
+            node.scan(.25)
+            assert node.observed() == set()
+            assert (48, 25) not in node.memory.cells
+
+            # The diagonal ray lands in cell (47, 25), only two cells from the
+            # mapped wall. The return is much closer than the wall's predicted range.
+            obstacle_angle = math.atan2(.75, .20)
+            obstacle_range = math.hypot(.75, .20)
+            for index in range(5):
+                node.clock.return_value = 10.1 + index * .525
+                observed_at.return_value = 100.1 + index * .525
+                node.scan(obstacle_range, angle=obstacle_angle, advance=.525)
+        finally:
+            wall_clock.stop()
+        assert node.observed() == {25 * 50 + 47}
+        memory = node.memory.cells[(47, 25)]
+        assert memory.occupied_observations == 5
+        assert memory.state == 'confirmed'
+
+        from test_planner_recovery import PlannerHarness
+        planner = PlannerHarness()
+        planner.params['obstacle_inflation_cells'] = 5
+        planner.params['preferred_clearance'] = 0.0
+        planner.params['clearance_penalty_gain'] = 0.0
+        planner.on_map(msg)
+        planner_tf = planner.tf_buffer.lookup_transform.return_value
+        planner_tf.transform.translation.x = 43.5 * .05
+        planner_tf.transform.translation.y = 10.5 * .05
+        goal = PoseStamped()
+        goal.header.frame_id = 'map'
+        goal.header.stamp.sec = 10
+        goal.pose.position.x = 43.5 * .05
+        goal.pose.position.y = 40.5 * .05
+        goal.pose.orientation.w = 1.0
+
+        with patch('smart_vision_amr.astar_planner.time.monotonic', return_value=100.0) as now:
+            planner.on_goal(goal)
+            assert (43, 25) in planner.planned_cells
+            planner.on_observed(node.observation_pub.publish.call_args.args[0])
+            assert not planner.planned_cells
+            now.return_value = 102.1
+            planner.retry_transform()
+            assert planner.planned_cells
+            assert all(cell[0] < 42 or not 20 <= cell[1] <= 30
+                       for cell in planner.planned_cells)
+            assert planner.last_goal is goal
+
+
+def test_unknown_frontier_does_not_filter_a_nearby_live_obstacle():
+    with harness() as node:
+        msg = OccupancyGrid()
+        msg.header.frame_id = 'map'
+        msg.info.resolution = .05
+        msg.info.width = msg.info.height = 50
+        msg.info.origin.orientation.w = 1.
+        msg.data = [0] * (50 * 50)
+        # The sensor ray ends in known free cell (46, 10), 2.5 cm before
+        # unknown cell (47, 10). Unknown space is not a mapped wall return.
+        msg.data[10 * 50 + 47] = -1
+        node.on_map(msg)
+        node.transform.transform.translation.x = 43.5 * .05
+        node.transform.transform.translation.y = 10.5 * .05
+
+        node.scan(.15)
+
+        assert node.observed() == {10 * 50 + 46}
