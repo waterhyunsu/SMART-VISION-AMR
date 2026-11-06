@@ -1,0 +1,256 @@
+{
+  "upstream": "https://github.com/kiki8105/SMART-VISION-AMR",
+  "commit": "ba81f454f8ca60d004cc4995c941337880fc02f5",
+  "unmodified_upstream_files": [
+    {
+      "path": "ros2_ws/src/smart_vision_amr/smart_vision_amr/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/smart_vision_amr/astar.py",
+      "sha256": "28eb2fdf8d68427206176186ee627c79ffa63137230883f6e9a720b460f568ce"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/smart_vision_amr/astar_planner.py",
+      "sha256": "78845bb22e11dfd4c29673696d6c8afce9ca66236c36b30caf6d910ce0f572ce"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/smart_vision_amr/braking_envelope.py",
+      "sha256": "8c54e10ae3ab961570eb2984759a6f3f7b11146ec08d0b66fe0864b326f1ae78"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/smart_vision_amr/change_memory.py",
+      "sha256": "0190adbf79c94ba5a75b7515d1e35736705f64b78faee955dc43850c6fae4367"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/smart_vision_amr/clearance_cost.py",
+      "sha256": "06ccb08d089d8da6dc06d8bacb2db26226e8e0555d319386ccd34d0baacdb879"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/smart_vision_amr/command_ramp.py",
+      "sha256": "86a59410dd034f2a9329066482e7240249d8d2fa4792219dc49f75a9ba4619cb"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/smart_vision_amr/command_stamper.py",
+      "sha256": "09716f74ca25eac981ba6f2d3a6800be907b83a65580010be891dd530d56ca66"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/smart_vision_amr/continuous_start_egress.py",
+      "sha256": "e4f52c5f2c6aa046bf80e1fb1ccccc380b1f292e2768357c0c62f1b1d75f9317"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/smart_vision_amr/ekf_sensor_guard.py",
+      "sha256": "00ee47bcfaf6f3c9ca1293033bdd047b0fb6b2d6142bbf0e69c1b5bc5f565802"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/smart_vision_amr/execution_progress.py",
+      "sha256": "b0333f5ba3911c446b6d76781da26ac1076012fe3ebb6b978cca8a844af00b12"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/smart_vision_amr/failure_memory.py",
+      "sha256": "4d6544bc625cb1b82eac2eee09bcf280b0e35449dd1c2efd5cca17d6673bdd87"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/smart_vision_amr/grid.py",
+      "sha256": "ecf939a51c53eb3387f6bd4db262b8b4dbb85ebfa263724e019e77a4ab9f1ba8"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/smart_vision_amr/local_detour.py",
+      "sha256": "3c3246fea1c9cf8f3f197d3d27dfeec527e866de40bea6c0224df3bc99fa0e9a"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/smart_vision_amr/localization_geometry.py",
+      "sha256": "145d5d3a9924ebed746a6eb14e72a52155ec7841b9cafaf1c8538701399281a9"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/smart_vision_amr/localization_health.py",
+      "sha256": "79cc587d80f218b77a0a53a5fcd3a9c90ce5bdf19224c64dee1e6ea148881f6a"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/smart_vision_amr/localization_health_math.py",
+      "sha256": "47c1bda1d6c9a0d7612f17e5e30f0451e80819268768c3e4b23c57dab71ce89a"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/smart_vision_amr/map_utils.py",
+      "sha256": "c6150f71fd276bcd7936025349bb9bc882918eda7e26064254902e030f4a0601"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/smart_vision_amr/metric_connector.py",
+      "sha256": "1396a00041b5fbcbaa646bc0de61ca5f5875be559c4c801ad92a92f184dfdda5"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/smart_vision_amr/motion_mux.py",
+      "sha256": "9891bcb593813dd3836d5a2ae6533ae339b10484b9eb3ceb8dcd35525a3643a2"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/smart_vision_amr/obstacle_hold.py",
+      "sha256": "fd891197d6d544d7133eb1f3e66aabf684d2b3c8be85f49face257be948b28c8"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/smart_vision_amr/obstacle_memory.py",
+      "sha256": "155572d2062c44cf146ba9926b7add2bc376cc5b28b5e8f53c0e102415324440"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/smart_vision_amr/odometry_trail.py",
+      "sha256": "5c555d0808b6c68fd932d58d201ffab53ac9d370b8cfc1db1bb9be9654dea114"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/smart_vision_amr/path_follower.py",
+      "sha256": "3112079a158913796379bdd7048e02cae9413dc20f09945f49441ea4e5e62dc1"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/smart_vision_amr/path_geometry.py",
+      "sha256": "d29b8be2ec9b17578d5f01c6d78e8985ccb7a36bc4fed8d22a6ab6a7892b2f29"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/smart_vision_amr/recovery_episode.py",
+      "sha256": "98cecd86e1438e29f5228ecd637a8456dbc901368fa7b4b51f758761bcc5ec44"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/smart_vision_amr/reverse_recovery.py",
+      "sha256": "97f3c21f4c77b9eac7452451d52e69bda6cb7c5aae9dac874e02eb1f1819f46d"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/smart_vision_amr/runtime_timing.py",
+      "sha256": "878d4b2361b8448aa376121ab3f6aa8689d18269d91929ec4f9d5ff34f93cbd0"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/smart_vision_amr/scan_outlier_guard.py",
+      "sha256": "e604fb2f6394a75219ffb569fb863fb8b52515639107a5b5c17b523072aad70c"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/smart_vision_amr/sensor_stamp_guard.py",
+      "sha256": "e912b5413e70200313be1c4c9f83d1a864b2c0b3152404cd4cb5ddc0cdf8756a"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/smart_vision_amr/_geometry_native.cpp",
+      "sha256": "2904b2e316226198218afa249bdc37446e3fef2adf7299caeff23f845c18315b"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/setup.cfg",
+      "sha256": "d65ad0063c8a75d30560c67e92ee5423d1f8f8b89942c07a6a6aef6226b0f3e9"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/resource/smart_vision_amr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/config/classroom_hardware_nodes.yaml",
+      "sha256": "59f6b427b89c3a60f77b87254a3d5352e31a4fde245a241f9c6fef839ed81a1f"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/config/motion_mux_hardware.yaml",
+      "sha256": "eb36b95c3e26d9693ea33d5d05b15e1afc412fcd506bb2dd8bdf709fe6c52614"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/config/localization_health.yaml",
+      "sha256": "b543301c9e4a100ef7a2669536a117ef11c1cbd6cc3dedbebd85ab1d1a9b9e3e"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/config/classroom_demo_operator_20261104.yaml",
+      "sha256": "f4dadc0f36a4a19b2c03fb66df220533bebf8de94a6344ea71bb04ba2698e103"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/test/test_astar_directed_edges.py",
+      "sha256": "0f0b7e5df2a12a4ca6bc3f4c4968bc3cecf8b9a6de57042d76dfbfcb490c230a"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/test/test_execution_progress.py",
+      "sha256": "edea1d7f8718474d4661534a08ea7eb8a8a62544669d658ac1560e654d586393"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/test/test_local_detour.py",
+      "sha256": "d79abd54ae2fdf7b3a2f6bcf2c380b2522b430d3a75b9bf20cd76fb79ac654c4"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/test/test_command_protocol.py",
+      "sha256": "ac8097f9363832a75c7dba7fa9f08eebf23658945177c682b9af45326d8b0b44"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/test/test_recovery_episode_coordinator.py",
+      "sha256": "14f897dcae9778b762c2f822c4f1b01b01ddb48970d683f34475071f01c1a015"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/test/test_reverse_recovery.py",
+      "sha256": "afd65779b64a65412dac731a5378a53926d9e538e41b4bccec26916fe280668e"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/test/test_odometry_trail.py",
+      "sha256": "0ec67137ac80b50a96dd0932ffe3af2c25c8f5027096d6ee6ec554ce97f281a7"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/test/test_localization_rotation_clearance.py",
+      "sha256": "cd9b4dc09fd83f8562e822ee277e4a25ad99446f4615b2f887ca8b8613e0e7fc"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/test/test_localization_geometry.py",
+      "sha256": "6d0679a858a497716001861af30ff3688874dfb91df84c701308b1d1424a0e3e"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/test/test_sensor_stamp_guard.py",
+      "sha256": "745a1ff638355de00ea9a6191a793480606974c322e8bc710d397b6a42b6393e"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/test/test_obstacle_hold.py",
+      "sha256": "83eda9dc394be19983fc50b0b51d8fe5b27f0ec4a39045118aa01f3b4b8a3e1d"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/test/test_static_start_egress.py",
+      "sha256": "525011728df8be7ec0fa13a847c2f5b9784032f070a79acba257c94a1434a9cf"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/test/test_failure_memory.py",
+      "sha256": "26ee05014fc05a9c96ba6a793a7a3240f73c49e0d82f9cfd6c2bf5967510c81a"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/test/test_clearance_cost.py",
+      "sha256": "c4f7094fa9a3280370907dcdadfef87699241bdbd030efaa4e69fb9c8c5e8a35"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr/test/test_astar_clearance_penalty.py",
+      "sha256": "925b7d2104e3d272af1b408f9b6b3b1aec802f7cfd49084424937dd75f2521bf"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr_dwb/CMakeLists.txt",
+      "sha256": "7d30b0e632f5737a7da885188571cb6474968bda0cd80d72c98c39b2d0fbe00b"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr_dwb/include/smart_vision_amr_dwb/command_envelope.hpp",
+      "sha256": "ece7851f7c4488289211bcee471519ab61d2cdff11231f74251e292ee773d287"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr_dwb/include/smart_vision_amr_dwb/route_adherence.hpp",
+      "sha256": "1b98858b1a227e36dac2c8289d8e11b6700d85a2d94659c9c8e80d15e704781a"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr_dwb/include/smart_vision_amr_dwb/route_horizon.hpp",
+      "sha256": "42ecb4dc871a1e5d14ede06adc5dc09fa43bfb473b8649d0e640306e2b0f3836"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr_dwb/include/smart_vision_amr_dwb/route_tracking_dwb.hpp",
+      "sha256": "50e8536c884dd6671f69fadbc538dcacdc5e268ad1c2ae3f12b1636dda9a607f"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr_dwb/package.xml",
+      "sha256": "69d5552a14de1f8ddd9f82a2763f38b83e0af1058341174d669f88107ad32ac2"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr_dwb/route_tracking_plugin.xml",
+      "sha256": "824699cbf9af0fc9ea9645046d43e72bd9d5fce7827d256f107ce4b978678015"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr_dwb/src/route_tracking_dwb.cpp",
+      "sha256": "04464264bb634def4717f74f8f815dd760fba2c210dbb8678bfa405213153add"
+    },
+    {
+      "path": "ros2_ws/src/smart_vision_amr_dwb/test/test_route_horizon.cpp",
+      "sha256": "c0d55a03d4a48bf3cb9495a0894fc16b46a3517908971ccd4e29e0550ddb6bf3"
+    }
+  ],
+  "adapted_tests": [
+    {
+      "path": "ros2_ws/src/smart_vision_amr/test/test_command_ramp.py",
+      "change": "Isolate ROS message stand-ins with monkeypatch; original assertions retained."
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+<library path="route_tracking_dwb">
+  <class name="smart_vision_amr_dwb::RouteTrackingDWB"
+         type="smart_vision_amr_dwb::RouteTrackingDWB"
+         base_class_type="nav2_core::Controller">
+    <description>
+      DWB with a local scoring horizon measured along the route so a folded
+      future branch cannot attract the controller across an intervening wall.
+      All original DWB collision critics and the final action goal are retained.
+    </description>
+  </class>
+</library>

@@ -1,0 +1,58 @@
+# Confidence checks for both simulation and the physical robot.
+# Distances are metres, angles are radians, durations are seconds.
+# These are initial bounds, not a claim of physical sensor calibration.
+localization_health:
+  ros__parameters:
+    base_frame: base_footprint
+    map_frame: map
+    odom_frame: odom
+    # Health observer only: prefer current dynamic TF over reliable backlog.
+    # Set false to restore the original reliable listener, then restart health.
+    # Static TF retains its reliable/transient-local listener in both modes.
+    dynamic_tf_best_effort: true
+    stable_seconds: 2.0
+    fault_seconds: 0.5
+    # TF lookup/scan-map projection gaps seen under load lasted about 0.5 s.
+    # Stop autonomous velocity immediately; only delay the latched ESTOP for
+    # these spatial checks. Real scan/odom loss and pose jumps still latch
+    # after fault_seconds; the independent EKF guard has a 1.5 s stream limit.
+    spatial_fault_seconds: 1.25
+    # At 5 Hz scan period is 0.2 s. Allow up to 0.5 s extra transient
+    # receive/header delay at departure. The next 0.25 s health tick blocks
+    # auto before a 1 s outage; the independent EKF guard trips at 1.5 s.
+    # fault_seconds debounces sensor loss; spatial_fault_seconds covers TF and
+    # scan-to-map projection gaps. Both immediately close autonomous motion.
+    sensor_timeout: 0.7
+    tf_timeout: 1.0
+    future_tolerance: 1.5  # AMCL map->odom may be intentionally future-dated.
+    position_warning: 0.35  # Caution and half-speed threshold.
+    # Initial acquisition may complete with position warning alone up to 0.50 m.
+    # /amcl_pose, scan, odom, map TF and scan-map measurement availability
+    # must still pass. A finite low wall-hit score is diagnostic only.
+    position_acquisition_limit: 0.50
+    position_critical: 0.8
+    yaw_warning: 0.5
+    yaw_critical: 1.0
+    agreement_warning: 0.55  # Advisory bands for saved-wall hit ratio.
+    agreement_critical: 0.20  # Severe advisory; never a motion gate by itself.
+    agreement_tolerance: 0.18
+    # Accumulated moving time since the last new AMCL sample, excluding idle.
+    # Stops do not reset the budget, so repeated stop/go cannot bypass it.
+    amcl_moving_timeout: 4.0
+    # A cached AMCL covariance is not a current pose. The stopped robot gets
+    # bounded no-motion refresh requests before this age blocks autonomous drive.
+    amcl_pose_timeout: 8.0  # Both /amcl_pose receipt and source-header age.
+    # Ask AMCL for a real laser-filter update during slow/short reversing turns.
+    # Requests/responses never count as a new pose; the 4 s watchdog remains.
+    nomotion_update_interval: 2.0  # s; rate is capped at one request per 2 s.
+    nomotion_update_trigger_age: 1.0  # s since the last actual AMCL pose.
+    nomotion_request_timeout: 1.0  # s; one pending request, then local cleanup.
+    # Real scan-only AMCL updates while stopped and still acquiring/uncertain.
+    # Never changes covariance or clears a stop. Each request needs a new scan.
+    stationary_refresh_max_requests: 10
+    stationary_refresh_timeout: 30.0  # s per episode; reinitialize to explicitly retry.
+    agreement_tf_wait_sec: 0.20  # s; bounded wait for the scan measurement TF.
+    agreement_tf_queue_size: 10  # Retain older scans so a delayed TF cannot starve checks.
+    motion_dt_limit: 1.0  # Bound one integration step after scheduler stalls.
+    jump_distance_m: 0.65  # AMCL displacement residual relative to wheel/IMU odom.
+    jump_yaw_rad: 0.8

@@ -1,191 +1,148 @@
-# SMART-VISION-AMR — TurtleBot3 Waffle Pi 실기 A* 주행
+# A* 고도화 주행 알고리즘 · SMART-VISION-AMR
 
-Ubuntu 22.04 / ROS 2 Humble용 실기 주행 패키지입니다. Raspberry Pi의 TurtleBot3 bringup과
-Linux PC의 Nav2를 사용합니다. 기본 지도는 `classroom_20261027_cleaned.yaml`입니다.
-Gazebo, 카메라, ArUco 기능은 포함하지 않습니다.
+**격자 위에서 찾은 경로를 실제 로봇이 끝까지 주행할 수 있도록 확장한 A* 주행 모듈입니다.**
+심화프로젝트 팀플에서 제가 담당한 A* 고도화 주행 알고리즘을 포트폴리오용으로 정리했습니다.
+대상 플랫폼은 TurtleBot3 Waffle Pi, Ubuntu 22.04, ROS 2 Humble, Nav2입니다.
 
-이전 작업 기록은 [2026-10-26 핸드오프](docs/HANDOFF_2026-10-26.md)에 있습니다.
-이 문서의 실행 명령과 설정은 이후의 주행 통합 버전을 기준으로 합니다.
+> 이 저장소는 [SMART-VISION-AMR 팀 최종본](https://github.com/kiki8105/SMART-VISION-AMR)에서
+> 주행 관련 코드를 추출한 개인 포트폴리오입니다. 팀 전체 시스템을 개인 단독 개발 결과로
+> 표현하지 않습니다. 추출 기준은 `ba81f454f8ca60d004cc4995c941337880fc02f5`이며,
+> 파일별 원본 해시는 [출처 명세](docs/source_manifest.json)에 기록했습니다.
 
-## 실행 명령 한눈에 보기
+## 담당 범위와 저장소 구성
 
-최초 설치와 빌드를 마친 후, **Pi 터미널**과 **Linux PC 터미널**에서 각각 실행합니다.
+개인 담당 범위는 A* 경로 탐색 고도화와 장애물 변화·실행 실패에 대응하는 주행 알고리즘입니다.
+이를 검토하고 연결할 수 있도록 경로 추종, 장애물 기억, 속도 명령 중재 및 상태 검사에 필요한
+팀 통합 코드도 함께 보존했습니다. 포함된 모든 코드의 단독 저작권을 주장하는 의미는 아닙니다.
 
-```bash
-# Raspberry Pi: 로봇 센서와 모터
-source /opt/ros/humble/setup.bash
-source ~/turtlebot3_ws/install/setup.bash  # 해당 워크스페이스에 설치한 경우
-export TURTLEBOT3_MODEL=waffle_pi LDS_MODEL=LDS-03 ROS_DOMAIN_ID=16
-ros2 launch turtlebot3_bringup robot.launch.py use_sim_time:=false
+웹 UI, 배송·재고 임무, 카메라·ArUco, SLAM 구축, EKF 추정 파이프라인, Gazebo 시나리오,
+팀 전체 발표자료는 현재 파일 구성에 포함하지 않았습니다. 기존 개인 저장소의 커밋 이력은 유지합니다.
+`ekf_sensor_guard.py`는 주행 코드에서 참조하는 상태 판정 의존성으로만 포함하며 별도 실행 노드로 등록하지 않습니다.
+
+## 어떤 문제를 해결했는가
+
+| 주행 중 문제 | 구현한 대응 | 주요 코드 |
+|---|---|---|
+| 최단 경로가 벽 가까이를 통과함 | 장애물 팽창과 여유 거리 비용으로 통행 가능 영역과 선호 영역을 구분 | `astar.py`, `clearance_cost.py` |
+| 이동 중 새로운 장애물이 나타남 | 현재 관측을 반영하고, 제한된 범위에서 원래 경로 앞쪽에 합류하는 국소 우회 시도 | `local_detour.py`, `astar_planner.py` |
+| 경로는 있지만 같은 구간에서 계속 실패함 | 위치·헤딩 진척을 판단하고 실패한 진입 방향의 간선을 임시 제한 | `execution_progress.py`, `failure_memory.py` |
+| 장애물 팽창 영역에서 시작하거나 후진이 필요함 | 차체 여유를 검사하는 출발 연결과 최근 궤적에 기반한 제한적 후진 복구 | `continuous_start_egress.py`, `metric_connector.py`, `reverse_recovery.py` |
+| 장애물이 남아 있는데 무한히 재시도함 | 시도 횟수를 제한하고 실제 라이다 제거 확인 후 목표 재개 | `obstacle_hold.py`, `recovery_episode.py` |
+| 경로 발행을 주행 성공으로 오인함 | Nav2 추종 상태와 실제 이동 진척을 함께 확인 | `path_follower.py`, `odometry_trail.py` |
+
+핵심 구현은 [smart_vision_amr](ros2_ws/src/smart_vision_amr/smart_vision_amr)에 있습니다.
+
+## 알고리즘 흐름
+
+```mermaid
+flowchart TD
+    A[목표와 지도] --> B[장애물 팽창 · 여유 비용 · 방향별 실패 기억]
+    B --> C[A* 전역 경로]
+    C --> D[경로 기하 검사와 Nav2 FollowPath]
+    D --> E[실제 주행 진척 확인]
+    F[라이다 관측과 장애물 기억] --> B
+    F --> G[남은 경로 차단 감지]
+    G --> H[제한된 국소 우회]
+    H --> D
+    H -->|우회 불가| B
+    E -->|정체| I[실패 접근 기억 · 복구 판단]
+    I --> B
+    I --> J[안전 조건 충족 시 제한적 후진]
+    J --> B
+    I --> K[재시도 제한 후 장애물 제거 대기]
 ```
 
-```bash
-# Linux PC: 중복 실행 검사 후 지도, Nav2, A*, 주행 명령 중재
-source /opt/ros/humble/setup.bash
-cd ~/SMART-VISION-AMR/ros2_ws
-colcon build --symlink-install --packages-select smart_vision_amr
-../scripts/run_classroom_navigation_16.sh
-```
+A*는 8방향 격자 탐색에 셀·간선 비용과 방향별 금지 간선을 적용합니다.
+경로 스무딩도 장애물과 실패 간선 제한을 따라야 합니다. 원본 지도 PGM을 수정하는 대신
+현재 장애물, 확정된 장애물 기억, 일시적인 실패 접근 기억을 분리해서 관리합니다.
+후진·출발 예외는 원본 점유 장애물을 통과하도록 허용하는 기능이 아닙니다.
 
-Pi에서 이미 bringup이 실행 중이면 PC 명령만 실행합니다. 설치 위치가 다르면
-`cd` 경로를 바꾸세요. 이 스크립트는 도메인 16, 실제 시간, 저장 지도,
-AMCL, 동작 명령 중재 및 장애물 기억을 사용하고 RViz는 열지 않습니다.
-별도 터미널에서 RViz를 열고 **2D Pose Estimate**로 시작 위치를 잡은 뒤
-**2D Goal Pose**로 도착지를 지정합니다.
+## ROS 없이 검증하기
 
-## 구성
-
-`/smart_vision_amr/goal` → 여유 거리 비용을 사용하는 A* (`/smart_vision_amr/path`)
-→ Nav2 `/follow_path` → `/smart_vision_amr/navigation_cmd_vel`
-→ motion mux `/cmd_vel` → TurtleBot3입니다. `/scan` 관측은 현재 장애물 회피에
-즉시 사용하고, 확인된 장애물은 지도와 별도 파일에 기억합니다. 경로가 막히면
-목표를 유지한 채 재탐색하고, 뒤쪽 안전 조건이 만족되면 제한적으로 후진합니다.
-
-> **적응형 장애물 기억 기준:** 같은 지도 셀이 장애물로 **5회 이상 관측되고,
-> 첫 관측부터 최소 2초가 지난 경우에만** 기억 셀로 확정합니다. 두 조건을
-> 모두 만족해야 합니다. 확정된 셀은 A*가 장애물로 취급하고, 변경된 셀이 현재
-> 경로를 막으면 새 경로를 계산합니다. 기억은 기본적으로 켜져 있으며,
-> `~/.ros/smart_vision_amr/classroom_memory.json`에 저장됩니다. 현재 관측은
-> 기억 확정 전에도 경로 계획에 반영됩니다.
-> 셀이 비어 있는 것으로 5회 이상, 최소 2초간 관측되면 기억에서 해제합니다.
-
-라이다 벽 반사는 셀 위치만으로 분류하지 않습니다. 관측 노드는 각 레이의
-측정 거리와 원본 지도에서 처음 만나는 알려진 점유 벽까지의 거리를 비교합니다.
-미탐색 셀은 A*에서 계속 장애물로 취급하지만, 벽 반사 기준으로는 사용하지 않습니다. 두 값이
-5cm 이내로 맞으면 지도 벽 반사로 보고 A*와 기억에서 제외합니다. 그보다
-가까운 새 물체는 벽에 붙어 있어도 즉시 A* 장애물 레이어와 경로 재계산에
-들어갑니다. 판정된 동적 장애물은 A*에서 전체 5셀(25cm) 팽창을 적용하고,
-Nav2 로컬 코스트맵에도 원본 `/scan`이 계속 전달됩니다. 실제 통로가 로봇
-반경만큼 좁아졌다면 안전한 경로가 없다고 판단해 정지할 수 있습니다. 지도
-위치 오차가 거리 허용치보다 크면 벽 반사가 동적 장애물로 잡힐 수 있습니다.
-기억된 잘못된 셀이 경로를 막는 경우에는 지도·위치 추정·라이다를 확인한 뒤
-`ros2 service call /smart_vision_amr/clear_memory std_srvs/srv/Trigger '{}'`로
-기억을 지우세요. 원본 지도 PGM은 수정되지 않습니다.
-
-## 1. 로봇 Raspberry Pi
-
-이미 하드웨어 bringup과 PC 간 ROS 토픽 공유가 된 환경에서 실행합니다.
-Pi의 `turtlebot3_bringup`과 LDS-03용 `coin_d4_driver`가 설치돼 있어야 합니다.
-없다면 [ROBOTIS의 Ubuntu 22.04/Humble SBC 설치 안내](https://emanual.robotis.com/docs/en/platform/turtlebot3/sbc_setup/)에
-따라 Pi에 TurtleBot3 `humble` 브랜치와 `coin_d4_driver`를 설치합니다.
-PC와 Pi는 같은 네트워크 및 같은 `ROS_DOMAIN_ID`를 사용하세요.
+Python 3.10 이상에서 저장소 루트 기준으로 실행합니다.
 
 ```bash
-source /opt/ros/humble/setup.bash
-source ~/turtlebot3_ws/install/setup.bash  # 이 경로에 ROBOTIS 패키지를 빌드한 경우
-export TURTLEBOT3_MODEL=waffle_pi
-export LDS_MODEL=LDS-03
-export ROS_DOMAIN_ID=16  # PC에도 같은 값을 설정; 이미 다른 값을 쓰고 있다면 그 값 유지
-ros2 pkg prefix turtlebot3_bringup
-ros2 pkg prefix coin_d4_driver
-ros2 launch turtlebot3_bringup robot.launch.py use_sim_time:=false
-```
-
-Pi에서 `/scan`, `/odom`, `/tf`, `/cmd_vel`이 존재해야 합니다. LDS-03 드라이버는
-설치된 ROBOTIS TurtleBot3 bringup의 `LDS_MODEL=LDS-03` 지원을 사용합니다.
-기본 장치 경로는 OpenCR `/dev/ttyACM0`, LDS-03 `/dev/ttyUSB0`입니다.
-장치 연결이 다르면 포트와 권한을 확인하세요. ROS 패키지가 이미 시스템에
-설치되어 `~/turtlebot3_ws`가 없다면 위 `source` 줄은 생략합니다.
-
-## 2. Linux PC 설치 및 실행
-
-PC와 Pi에서 같은 `ROS_DOMAIN_ID`를 사용합니다. PC에 ROS 2 Humble, Nav2,
-TurtleBot3 navigation 패키지가 설치되어 있어야 합니다.
-
-```bash
-sudo apt update
-sudo apt install ros-humble-desktop ros-humble-navigation2 ros-humble-nav2-bringup \
-  ros-humble-turtlebot3-navigation2 ros-humble-rviz2 \
-  python3-colcon-common-extensions python3-rosdep
 git clone https://github.com/waterhyunsu/SMART-VISION-AMR.git
-cd SMART-VISION-AMR/ros2_ws
+cd SMART-VISION-AMR
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements-dev.txt
+python -m pytest -q
+```
+
+원본 테스트 중 ROS 초기화나 팀 전체 파일 구성을 요구하지 않는 기하·상태 판정 테스트를
+선별했습니다. 방향별 간선 제한, 여유 비용, 국소 우회 합류, 출발 충돌 검사, 실패 기억,
+후진 복구 및 복구 상태 전이를 검증합니다. 추출본의 검증 범위는 [검증 기록](docs/VALIDATION.md)에 있습니다.
+
+## ROS 2 패키지 빌드
+
+Ubuntu 22.04 / ROS 2 Humble 환경에서 실행합니다.
+
+```bash
 source /opt/ros/humble/setup.bash
-export ROS_DOMAIN_ID=16  # Pi와 동일한 값
+cd ros2_ws
 rosdep install --from-paths src --ignore-src -r -y
 colcon build --symlink-install
 source install/setup.bash
-export TURTLEBOT3_MODEL=waffle_pi
-python3 ../scripts/install_tf2_02520_overlay.py  # tf2 0.25.21~0.25.24인 PC에서 1회
-../scripts/run_classroom_navigation_16.sh
 ```
 
-Humble의 `tf2` 0.25.23에서 Nav2 TF 수신이 멈추고, 로컬 코스트맵은 오래된
-로봇 자세를 사용한 채 새 타임스탬프로 발행되는 현상을 확인했습니다. 위 스크립트는
-ROS 공식 2026-07-02 스냅샷의 서명과 패키지 해시를 검증한 뒤 정상 동작이
-보고된 `tf2` 0.25.20을 사용자 디렉터리에 설치합니다. 시스템 apt 패키지는
-수정하지 않습니다. 해당 버전의 `tf2`가 설치된 PC에서는 `hardware.launch.py`가
-이 로컬 버전을 자동으로 사용하고, 로컬 버전이 없으면 주행 런치를 중단합니다.
-Nav2는 기본적으로 노드를 개별 프로세스로 실행합니다.
-교실 실행은 DWB, Nav2 속도 스무더, 모션 mux의 상한을 전진·평면 0.16m/s,
-회전 0.5rad/s로 통일합니다.
-위치 도착 허용 오차와 최종 회전 진입 거리 기준은 모두 0.15m입니다.
+C++ 기하 계산 확장은 선택 사항이며, 빌드되지 않으면 Python/NumPy 경로를 사용합니다.
+패키지는 알고리즘과 주행 연결 노드를 제공합니다. 로봇 bringup, 지도 서버·AMCL,
+Nav2 controller와 실제 하드웨어 실행 환경은 별도로 준비해야 합니다.
+팀의 전체 실행 환경은 [원본 저장소](https://github.com/kiki8105/SMART-VISION-AMR)를 참고하세요.
+이 추출본에는 전체 시스템을 자동 기동하는 하드웨어 런치를 제공하지 않습니다.
 
-기본 교실 실행 스크립트는 RViz를 열지 않습니다. 별도 PC 터미널에서
-`ros2 run rviz2 rviz2 -d ~/SMART-VISION-AMR/ros2_ws/src/smart_vision_amr/rviz/minimal.rviz`
-로 열 수 있습니다. 직접 `ros2 launch smart_vision_amr hardware.launch.py`를
-실행하면 RViz도 열리지만, 중복 실행 검사를 포함한 스크립트 사용을 권장합니다.
+## 기존 Nav2 환경에 연결하기
 
-기본 Nav2 설정은 저장소의 `config/curve_tuning_waffle_pi.yaml`을 사용합니다.
-지도는 정리된 교실 지도입니다. 실제 지도와 로봇 위치가
-맞아야 합니다. 다른 지도를 사용하려면 `map:=/절대경로/map.yaml`을 지정합니다.
+주행 연결에 필요한 입력과 출력은 다음과 같습니다.
 
-## 3. 주행 전 확인
+| 인터페이스 | 역할 |
+|---|---|
+| `/map`, `map → odom → base_footprint` TF | 지도와 로봇 위치 |
+| `/scan`, `/odom`, `/amcl_pose` | 장애물 관측·진척·위치 상태 검사 |
+| `/smart_vision_amr/goal` | `geometry_msgs/PoseStamped` 목표 입력 |
+| `/smart_vision_amr/path` | A*가 생성한 `nav_msgs/Path` |
+| `/follow_path` | Nav2 `FollowPath` action |
+| `/local_costmap/costmap`, `/local_costmap/published_footprint` | 추종 전 검사 입력 |
+| `/smart_vision_amr/navigation_cmd_vel` | Nav2 최종 속도 출력을 연결할 토픽 |
+| `/smart_vision_amr/navigation_control` | `command_stamper`가 생성하는 시각·순번 포함 명령 |
+| `/smart_vision_amr/motion_status`, `/smart_vision_amr/localization_health` | 중재·상태 검사 결과 |
+| `/cmd_vel` | `motion_mux`가 발행하는 로봇 최종 속도 |
 
-로봇을 넓고 비어 있는 곳에 놓고 다음을 확인합니다.
+설정은 `ros2_ws/src/smart_vision_amr/config/`에 있습니다. `classroom_hardware_nodes.yaml`은
+계획·추종·기억 설정, `classroom_demo_operator_20261104.yaml`은 원본 Nav2 운용 설정입니다.
+해당 Nav2 설정의 경로 추종 플러그인도 `smart_vision_amr_dwb` 패키지로 포함했습니다. 자세한 연결 조건은 [통합 메모](docs/INTEGRATION.md)를 확인하세요.
+
+기존 Nav2·센서·TF 환경을 준비한 뒤 각 명령을 별도 터미널에서 실행할 수 있습니다.
+아래는 노드 실행 예시이며 전체 로봇 기동 절차를 대신하지 않습니다.
 
 ```bash
-ros2 topic hz /scan
-ros2 topic echo /odom --once
-ros2 topic echo /map --once
-ros2 run tf2_ros tf2_echo odom base_footprint
-ros2 action list | grep follow_path
-ros2 lifecycle get /controller_server
+# 저장소 루트에서 ROS 및 ros2_ws/install/setup.bash를 source한 터미널마다 설정
+CFG="$PWD/ros2_ws/src/smart_vision_amr/config"
+ros2 run smart_vision_amr astar_planner --ros-args --params-file "$CFG/classroom_hardware_nodes.yaml"
+ros2 run smart_vision_amr path_follower --ros-args --params-file "$CFG/classroom_hardware_nodes.yaml"
+ros2 run smart_vision_amr change_memory --ros-args --params-file "$CFG/classroom_hardware_nodes.yaml"
+ros2 run smart_vision_amr localization_health --ros-args --params-file "$CFG/localization_health.yaml"
+ros2 run smart_vision_amr command_stamper
+ros2 run smart_vision_amr motion_mux --ros-args --params-file "$CFG/motion_mux_hardware.yaml"
 ```
 
-별도 터미널에서 연 RViz에서 실제 위치에 맞춰 **2D Pose Estimate**를 지정한 뒤
-`ros2 run tf2_ros tf2_echo map base_footprint`가 연속적으로 출력되는지
-확인합니다. 지도와 위치 추정이 맞지 않으면 목표를 보내지 마세요.
-또한 `/local_costmap/published_footprint`의 `header.stamp`가 현재 시간에 맞게
-계속 증가해야 합니다. 오래된 코스트맵, `/scan`, `/odom`이 감지되면
-`path_follower`가 목표 전송을 거부하거나 진행 중인 목표를 취소합니다.
+로봇·PC의 도메인과 시계를 맞추고 Nav2의 최종 출력은 위 입력 토픽으로 연결합니다.
+주행 중단은 `/smart_vision_amr/cancel_navigation`, 비상정지는 `/smart_vision_amr/emergency_stop`
+`std_srvs/Trigger` 서비스를 사용합니다. 상태·센서·TF 조건이 충족되지 않으면 주행이 거부될 수 있습니다.
 
-## 4. 첫 목표
+## 결과와 한계
 
-RViz 상단의 **2D Goal Pose**를 선택해 지도 안의 가깝고 비어 있는 지점을
-클릭하고 방향으로 드래그합니다. 이 버튼은 `/smart_vision_amr/goal`로
-직접 발행하도록 설정되어 있어 A* 경로가 사용됩니다. 지도 위의 시작 위치는
-**2D Pose Estimate**로 지정합니다. PC의 launch를 실행해도 Pi에서 로봇
-bringup은 별도로 실행되어 있어야 합니다.
-
-클릭 대신 터미널로 목표를 보낼 수도 있습니다. 아래 좌표는 실제 지도에서
-확인한 자유 공간 좌표로 바꿔야 합니다.
-
-```bash
-ros2 topic pub --once /smart_vision_amr/goal geometry_msgs/msg/PoseStamped \
-  '{header: {frame_id: map}, pose: {position: {x: 0.0, y: 0.0, z: 0.0}, orientation: {w: 1.0}}}'
-ros2 topic echo /smart_vision_amr/navigation_status
-ros2 topic echo /cmd_vel
-```
-
-중단은 `ros2 service call /smart_vision_amr/cancel_navigation std_srvs/srv/Trigger '{}'`입니다.
-첫 주행은 바퀴를 띄워 방향을 확인하고, 이후 넓은 공간에서 저속으로 수행하세요.
-팀원 코드의 Sector 3 → Sector 2 → Home 실차 성공 기록이 있습니다. 이 저장소에서
-통합한 버전은 코드 시험과 빌드를 거쳤으며 실차 통합 주행 확인은 남아 있습니다.
-
-## 문제를 좁히는 순서
-
-1. `/map`이 없으면 map server와 지도 경로를 확인합니다.
-2. `map -> base_footprint` TF가 없으면 AMCL 초기 위치 및 Pi/PC 시계 동기화를 확인합니다.
-3. `/smart_vision_amr/path`가 비면 A* 로그의 시작/목표 셀과 지도 장애물 판정을 확인합니다.
-4. FollowPath가 실패하면 controller 로그, local costmap, `/scan`을 확인합니다.
-5. `/cmd_vel`이 나오는데 바퀴가 돌지 않으면 Pi의 OpenCR/모터 쪽을 확인합니다.
-
-`config/classroom_hardware_nodes.yaml`의 `obstacle_inflation_cells`는 0.05 m 해상도 기준
-5셀(0.25 m)입니다. 실제 통로 폭과 로봇 외형을 확인한 뒤 조정하세요.
-Nav2의 controller/local costmap은 저장소의 교실 튜닝 설정을 따릅니다.
+이 저장소에서 보여 주는 결과는 **A* 탐색에서 실제 실행 실패 대응까지 확장한 코드와 재현 가능한 단위 검증**입니다.
+팀 최종본의 실차 관찰·계산 성능 수치는 팀 통합 환경의 기록이며, 이 추출본의 신규 실차 시험 결과로 쓰지 않습니다.
+정확도, 주행 성공률, 완주 시간의 향상 비율은 추출본에서 측정하지 않았으므로 기재하지 않았습니다.
+현재 검증 환경에는 ROS 2와 로봇이 없어 통합 주행 재시험은 수행하지 않았습니다.
 
 ## 출처
 
-A* 격자 탐색, 장애물 관측/기억 및 FollowPath 연결은
-[`resilient-amr-astar`](https://github.com/waterhyunsu/resilient-amr-astar)의
-구현을 참고해 실기 전용 패키지로 구성했습니다.
+- 팀 프로젝트: [kiki8105/SMART-VISION-AMR](https://github.com/kiki8105/SMART-VISION-AMR)
+- 개인 포트폴리오: [waterhyunsu/SMART-VISION-AMR](https://github.com/waterhyunsu/SMART-VISION-AMR)
+- 원본 파일·커밋 식별: [source_manifest.json](docs/source_manifest.json)
+
+원본 Python 패키지의 `MIT`, DWB 지원 패키지의 `Apache-2.0` 라이선스 메타데이터와 코드 주석을 유지했습니다. 추출 기준 커밋에는
+별도 LICENSE 전문이 없으므로 새로운 저작권자나 라이선스 전문을 임의로 추가하지 않았습니다.

@@ -1,0 +1,12 @@
+/motion_mux:
+  ros__parameters:
+    # Wheel-level braking assumptions used by the final raw-scan guard.
+    # 0.15 m/s^2 is the conservative Gazebo actuator-lag stress assumption;
+    # it has not been calibrated as the physical robot's braking capability.
+    # The independent robot launch overrides this with its actual stock/calibrated
+    # wheel separation, using the same geometry as wheel_joint_odometry.
+    braking_wheel_separation: 0.287
+    braking_wheel_deceleration: 0.15
+    braking_reaction_seconds: 0.25
+    # Longitudinal stopping reserve only; does not inflate parallel walls.
+    braking_stop_reserve: 0.02

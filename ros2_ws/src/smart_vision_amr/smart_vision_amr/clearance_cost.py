@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from math import isfinite
+
 import cv2
 import numpy as np
 
@@ -13,11 +15,14 @@ def clearance_penalties(raw_grid: Grid, dynamic_obstacles: set[tuple[int, int]],
                         gain: float) -> dict[tuple[int, int], float]:
     """Penalize near-wall *free* cells without ever making a blocked cell free.
 
-    Clearance is measured to raw occupied/unknown map cells, current dynamic
-    returns, and the map boundary. Subtracting half a cell from OpenCV's
-    center-to-center distance avoids claiming more room than the grid provides.
-    Returned costs have the same units as one cardinal A* step.
+    Clearance is approximated from raw occupied/unknown map cells, current
+    dynamic returns, and the map boundary. These bounded costs only express a
+    preference; inflated occupancy and full-footprint checks decide collisions.
+    Even a narrow corridor with cost on every free cell remains traversable.
+    Returned costs have the same units as one cardinal A* step and lie in 0..gain.
     """
+    if not all(isfinite(value) for value in (resolution, preferred_clearance, gain)):
+        raise ValueError("clearance parameters must be finite")
     if resolution <= 0 or preferred_clearance <= 0 or gain <= 0:
         return {}
     free = np.logical_not(np.asarray(raw_grid.rows, dtype=np.bool_)).astype(np.uint8)
@@ -31,6 +36,6 @@ def clearance_penalties(raw_grid: Grid, dynamic_obstacles: set[tuple[int, int]],
     clearance = np.maximum(0.0, (distance - 0.5) * resolution)
     costly = (free != 0) & (clearance < preferred_clearance)
     ys, xs = np.nonzero(costly)
-    return {(int(x), int(y)): float(gain * (preferred_clearance - clearance[y, x])
-                                     / preferred_clearance)
+    return {(int(x), int(y)): float(gain * np.clip(
+                (preferred_clearance - clearance[y, x]) / preferred_clearance, 0.0, 1.0))
             for y, x in zip(ys, xs)}

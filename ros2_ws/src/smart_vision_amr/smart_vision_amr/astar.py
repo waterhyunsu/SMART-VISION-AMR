@@ -5,10 +5,11 @@ from __future__ import annotations
 from collections.abc import Mapping
 from heapq import heappop, heappush
 from itertools import count
-from collections import deque
 from math import hypot, isfinite
 
 from .grid import Cell, Grid
+
+Edge = tuple[Cell, Cell]
 
 CARDINAL_COST = 1.0
 DIAGONAL_COST = 2**0.5
@@ -39,7 +40,9 @@ class AStarPlanner:
             margin_cells: float = 0.4, max_egress_cells: int = 7,
             escape_cells: set[Cell] | None = None,
             allow_blocked_start: bool = False,
-            cell_penalty: Mapping[Cell, float] | None = None) -> list[Cell]:
+            cell_penalty: Mapping[Cell, float] | None = None,
+            blocked_edges: set[Edge] | None = None,
+            edge_penalty: Mapping[Edge, float] | None = None) -> list[Cell]:
         """Leave only a physically clear start inside static inflation.
 
         Inflation stays unchanged for the goal and the ordinary A* tail. A
@@ -49,6 +52,8 @@ class AStarPlanner:
         decrease along that prefix. No static obstacle is globally unblocked.
         Distances are in grid cells, including fractional footprint radii.
         """
+        blocked_edges, edge_penalty = self._edge_constraints(blocked_edges, edge_penalty)
+        self._validate_penalties(cell_penalty or {}, "cell")
         remembered = remembered or set()
         raw_blocked = raw_blocked or set()
         blocked = remembered | raw_blocked
@@ -67,7 +72,8 @@ class AStarPlanner:
             return self.plan(grid, start, goal, blocked,
                              allow_blocked_start=allow_blocked_start,
                              escape_cells=safe_escape_cells,
-                             cell_penalty=cell_penalty)
+                             cell_penalty=cell_penalty, blocked_edges=blocked_edges,
+                             edge_penalty=edge_penalty)
         radius = float(robot_radius_cells)
         margin = float(margin_cells)
         if (not isfinite(radius) or not isfinite(margin)
@@ -102,19 +108,31 @@ class AStarPlanner:
         epsilon = 1e-9
         if clearance(start) + epsilon < required_clearance:
             return []
-        queue = deque([(start, 0)])
-        came_from: dict[Cell, Cell] = {}
-        visited = {start}
+        # A weighted prefix must obey execution-memory costs too. Keep depth
+        # in the state: a cheaper but longer prefix must not discard a shorter
+        # one that still has enough egress budget to leave the halo.
+        serial = count()
+        queue = [(0.0, next(serial), (start, 0))]
+        start_state = start, 0
+        came_from = {}
+        best = {start_state: 0.0}
+        closed = set()
         while queue:
-            current, depth = queue.popleft()
+            prefix_cost, _, state = heappop(queue)
+            if state in closed:
+                continue
+            closed.add(state)
+            current, depth = state
             if (not grid.is_static_obstacle(current)
                     and current not in blocked):
                 tail = self.plan(grid, current, goal, blocked,
                                  allow_blocked_start=allow_blocked_start,
                                  escape_cells=safe_escape_cells,
-                                 cell_penalty=cell_penalty)
+                                 cell_penalty=cell_penalty, blocked_edges=blocked_edges,
+                                 edge_penalty=edge_penalty)
                 if tail:
-                    return self._reconstruct(came_from, current) + tail[1:]
+                    prefix = [item[0] for item in self._reconstruct(came_from, state)]
+                    return prefix + tail[1:]
                 # This is an exit, so do not extend the exceptional prefix into
                 # ordinary space and later re-enter inflation to reach a goal.
                 continue
@@ -123,37 +141,47 @@ class AStarPlanner:
             previous_clearance = clearance(current)
             for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
                 neighbor = current[0] + dx, current[1] + dy
-                if (neighbor in visited or raw_grid.is_static_obstacle(neighbor)
+                edge = current, neighbor
+                if (edge in blocked_edges or raw_grid.is_static_obstacle(neighbor)
                         or neighbor in raw_blocked):
                     continue
                 next_clearance = clearance(neighbor)
                 if (next_clearance + epsilon < required_clearance
                         or next_clearance + epsilon < previous_clearance):
                     continue
-                visited.add(neighbor)
-                came_from[neighbor] = current
-                queue.append((neighbor, depth + 1))
+                neighbor_state = neighbor, depth + 1
+                cost = (prefix_cost + 1.0 + (cell_penalty or {}).get(neighbor, 0.0)
+                        + edge_penalty.get(edge, 0.0))
+                if cost >= best.get(neighbor_state, float("inf")):
+                    continue
+                best[neighbor_state] = cost
+                came_from[neighbor_state] = state
+                heappush(queue, (cost, next(serial), neighbor_state))
         return []
 
     def plan(self, grid: Grid, start: Cell, goal: Cell, remembered: set[Cell] | None = None,
              *, allow_blocked_start: bool = False,
              escape_cells: set[Cell] | None = None,
-             cell_penalty: Mapping[Cell, float] | None = None) -> list[Cell]:
+             cell_penalty: Mapping[Cell, float] | None = None,
+             blocked_edges: set[Edge] | None = None,
+             edge_penalty: Mapping[Edge, float] | None = None) -> list[Cell]:
         """Find a shortest route, optionally charging extra cost when entering cells.
 
         ``cell_penalty`` is in units of one cardinal step. It can favor a
         longer route with greater obstacle clearance, but never makes a blocked
         cell traversable. The octile heuristic remains admissible because every
-        added penalty is nonnegative.
+        added penalty is nonnegative. ``blocked_edges`` and ``edge_penalty``
+        describe directed adjacent-cell transitions; prohibiting A -> B never
+        implicitly prohibits B -> A. These execution constraints do not alter
+        occupancy, unknown cells, diagonal collision rules, or start egress.
         """
+        blocked_edges, edge_penalty = self._edge_constraints(blocked_edges, edge_penalty)
         remembered = remembered or set()
         escape_cells = escape_cells or set()
         if cell_penalty is None:
             cell_penalty = {}
         else:
-            for penalty in cell_penalty.values():
-                if not isfinite(penalty) or penalty < 0:
-                    raise ValueError("cell penalties must be finite and nonnegative")
+            self._validate_penalties(cell_penalty, "cell")
         if not grid.contains(start) or not grid.contains(goal):
             raise ValueError("start and goal must be inside the grid")
         if (grid.is_static_obstacle(start)
@@ -180,7 +208,9 @@ class AStarPlanner:
 
             for dx, dy, move_cost in NEIGHBORS:
                 neighbor = (current[0] + dx, current[1] + dy)
-                if self._blocked(grid, neighbor, remembered, escape_cells) or neighbor in closed:
+                edge = current, neighbor
+                if (edge in blocked_edges or neighbor in closed
+                        or self._blocked(grid, neighbor, remembered, escape_cells)):
                     continue
                 if dx and dy:
                     side_a = (current[0] + dx, current[1])
@@ -189,7 +219,8 @@ class AStarPlanner:
                             or self._blocked(grid, side_b, remembered, escape_cells)):
                         continue
 
-                tentative = g_score[current] + move_cost + cell_penalty.get(neighbor, 0.0)
+                tentative = (g_score[current] + move_cost + cell_penalty.get(neighbor, 0.0)
+                             + edge_penalty.get(edge, 0.0))
                 if tentative >= g_score.get(neighbor, float("inf")):
                     continue
                 came_from[neighbor] = current
@@ -198,6 +229,30 @@ class AStarPlanner:
                 heappush(frontier, (priority, next(serial), neighbor))
 
         return []
+
+    @staticmethod
+    def _validate_penalties(penalties, kind):
+        for penalty in penalties.values():
+            if not isfinite(penalty) or penalty < 0:
+                raise ValueError(f"{kind} penalties must be finite and nonnegative")
+
+    @staticmethod
+    def _edge_constraints(blocked_edges, edge_penalty):
+        blocked_edges = blocked_edges or set()
+        edge_penalty = edge_penalty or {}
+        AStarPlanner._validate_penalties(edge_penalty, "edge")
+        for edge in (*blocked_edges, *edge_penalty):
+            try:
+                a, b = edge
+                valid = (len(a) == len(b) == 2
+                         and all(isinstance(v, int) and not isinstance(v, bool)
+                                 for v in (*a, *b))
+                         and max(abs(a[0] - b[0]), abs(a[1] - b[1])) == 1)
+            except (TypeError, ValueError, IndexError):
+                valid = False
+            if not valid:
+                raise ValueError("edge constraints require adjacent integer-cell pairs")
+        return blocked_edges, edge_penalty
 
     @staticmethod
     def _blocked(grid: Grid, cell: Cell, remembered: set[Cell], escape_cells: set[Cell] | None = None) -> bool:
